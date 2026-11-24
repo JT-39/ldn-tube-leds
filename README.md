@@ -1,0 +1,68 @@
+# tube-leds — step 1: the Bakerloo line
+
+Live Bakerloo line trains on an LED matrix. For now the matrix is an emulator in
+your browser. The emulator uses the same API as the real Raspberry Pi library,
+so this code will drive real panels later without changes.
+
+![demo](docs/bakerloo_demo.gif)
+
+## Quick start
+
+```bash
+uv sync
+uv run tube-leds run --demo --speed 10   # simulated trains, 10x speed → opens http://localhost:8888
+uv run tube-leds route                   # fetch the real station list from TfL + ASCII preview
+uv run tube-leds peek                    # table of where every live train is right now
+uv run tube-leds run                     # the real thing
+uv run pytest                            # 17 tests
+```
+
+Run commands from the project folder: data lives in `./data`.
+
+**API key (optional, free):** register at <https://api-portal.tfl.gov.uk>, then
+`export TFL_APP_KEY=...`. Without a key you're rate limited more tightly, which
+is fine at one request every 30 s.
+
+## How it works
+
+```
+TfL arrivals ──► positions.py ──► layout.py ──► app.py ──► LED matrix
+ (every 30 s)    where is each    which pixel    draw a frame   (emulator now,
+                 train right now? is that?       20x a second    real panels later)
+```
+
+| Module | The idea |
+|---|---|
+| `tfl.py` | Two kinds of data. The **route** (stations in order, with coordinates) is static, so it's fetched once and cached as JSON. **Arrivals** are live: one row per train *per upcoming station*, e.g. "train 236 reaches Paddington in 95 s". |
+| `positions.py` | Trains have no GPS, so position is **inferred**. Group rows by `vehicleId`, take the soonest station as "next stop", work out direction, then `progress = 1 − seconds_to_next / run_time`. Between polls, **dead reckoning** keeps trains moving smoothly. |
+| `layout.py` | Stations → pixels. A geographic layout fails in central London (Charing Cross and Embankment are ~170 m apart), so the default is a **schematic**: directions snapped to 45°, equal spacing, like Harry Beck's map. |
+| `app.py` | Draws frames, runs the loop, CLI. `make_matrix()` tries the real `rgbmatrix` library first and falls back to the emulator. |
+| `demo.py` | A fake TfL feed with the same JSON shape, for offline work and tests. It's simulated, so don't analyse it. |
+
+Two bits that are fun from a data science angle:
+
+- **`run_time` is a model with two parameters.** It's an overhead plus distance ÷ speed (`30 s + metres / 15`). Those numbers are guesses, waiting to be fitted.
+- **Direction labels are learned.** TfL tags trains "inbound"/"outbound", but what that means varies by line. `estimate_positions` takes a majority vote from trains whose direction is obvious (from their destination), then applies the label to ambiguous ones.
+
+## Things to try
+
+1. **Sanity-check the model.** `uv run tube-leds peek` shows our estimate next to TfL's own `currentLocation` text ("Between Paddington and Edgware Road"). Where do they disagree, and why?
+2. **See why tube maps are schematic.** `uv run tube-leds route --layout geo --size 64x32` reports a collision. Then compare `uv run tube-leds run --layout geo`.
+3. **Fit the run-time model.** Collect real data with `uv run tube-leds record --minutes 120`. Load `data/snapshots/*.jsonl` into polars or pandas and explode the `arrivals` lists. For each train, find when its "next stop" changes: that's a departure. Measure station-to-station times, regress them on distance, and plug the fitted overhead and speed into `default_run_time`.
+4. **Try another unbranched line.** `uv run tube-leds route --line victoria`, then `run --line victoria`. Jubilee and Waterloo & City work too. Branched lines (Northern, District…) need step 2.
+5. **Make it look like the real thing.** `run --no-track` lights only the trains, as on Fraser's map, where the printed map provides the lines.
+
+## Roadmap
+
+- **Step 2:** all lines, with branches. A route becomes a *graph*, not a list.
+- **Step 3:** a hand-drawn pixel map. Trace each line over a scan of the Tube map in a small pixel editor and export a `Layout`. This is the "by hand, every pixel" part.
+- **Step 4:** better positions. Fitted run times, smoothing noisy predictions, remembering trains between polls.
+- **Step 5:** hardware. A Raspberry Pi, an Adafruit RGB Matrix Bonnet, HUB75 panels and a beefy 5 V supply. Install `rpi-rgb-led-matrix` and `make_matrix()` switches over automatically.
+- **Step 6:** print the map to match the pixel grid, add a diffuser, and build the frame.
+
+## Caveat
+
+This was built and tested offline: the layout, model and emulator are all tested
+against the bundled station list and the demo feed. The live calls follow TfL's
+documented response format but haven't yet been run against the real API. If
+`route` or `peek` throws an error, that's the first thing to look at.

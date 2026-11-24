@@ -1,0 +1,221 @@
+"""Drawing frames, the main loop, and the command line.
+
+    uv run tube-leds run --demo      # simulated trains, no internet needed
+    uv run tube-leds run             # live Bakerloo line
+    uv run tube-leds peek            # print a table of where every train is
+    uv run tube-leds route           # refresh station data from TfL + preview the layout
+    uv run tube-leds record          # save raw snapshots for analysis later
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from datetime import datetime, timezone
+
+from . import tfl
+from .demo import DemoFeed
+from .layout import Layout, ascii_preview, build_layout
+from .positions import TrainPosition, estimate_positions, parse_predictions
+
+# TfL's official line colours. Brown is famously hard to show on RGB LEDs;
+# tweak it until it looks right on your panel.
+LINE_COLOURS = {
+    "bakerloo": (179, 99, 5),
+    "central": (227, 32, 23),
+    "jubilee": (160, 165, 169),
+    "victoria": (0, 152, 212),
+    "waterloo-city": (149, 205, 186),
+}
+TRAIN = (255, 255, 255)
+STATION = (70, 70, 70)
+
+
+def dim(colour: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(int(c * factor) for c in colour)
+
+
+def draw_frame(canvas, layout: Layout, positions: list[TrainPosition], colour, show_track: bool = True) -> None:
+    """Paint one frame. ``canvas`` is anything with SetPixel(x, y, r, g, b)."""
+    if show_track:
+        track = dim(colour, 0.4)
+        for seg in layout.segments:
+            for x, y in seg:
+                canvas.SetPixel(x, y, *track)
+    for x, y in layout.station_px:
+        canvas.SetPixel(x, y, *STATION)
+    for pos in positions:
+        (x, y), tail = layout.train_pixels(pos)
+        if tail:
+            canvas.SetPixel(*tail, *colour)
+        canvas.SetPixel(x, y, *TRAIN)
+
+
+def make_matrix(width: int, height: int):
+    try:
+        # The real thing, on a Raspberry Pi with hzeller/rpi-rgb-led-matrix installed.
+        from rgbmatrix import RGBMatrix, RGBMatrixOptions
+    except ImportError:
+        # Same API, but draws in your browser at http://localhost:8888
+        from RGBMatrixEmulator import RGBMatrix, RGBMatrixOptions
+
+    options = RGBMatrixOptions()
+    options.rows = height
+    options.cols = width
+    # With real chained panels you'll set cols to ONE panel's width and use
+    # chain_length / parallel instead. That's a hardware-step detail.
+    return RGBMatrix(options=options)
+
+
+def parse_size(text: str) -> tuple[int, int]:
+    w, h = text.lower().split("x")
+    return int(w), int(h)
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+
+def get_route(line: str, refresh: bool) -> tfl.Route:
+    """Use the cached route, refreshing it from TfL first if asked (and possible)."""
+    if refresh:
+        try:
+            with tfl.make_client() as client:
+                route = tfl.fetch_route(client, line)
+            tfl.save_route(route)
+            return route
+        except Exception as exc:  # no internet, rate limited, etc.
+            print(f"warning: couldn't refresh the route from TfL ({exc}); using the cached copy")
+    return tfl.load_route(line)
+
+
+class LiveFeed:
+    def __init__(self, line: str):
+        self.line = line
+        self.client = tfl.make_client()
+
+    def arrivals(self) -> list[dict]:
+        return tfl.fetch_arrivals(self.client, self.line)
+
+
+def cmd_run(args) -> None:
+    route = get_route(args.line, refresh=not args.demo)
+    width, height = parse_size(args.size)
+    layout = build_layout(route, width, height, args.layout)
+    for a, b in layout.collisions(route):
+        print(f"note: {a} and {b} share a pixel with this layout")
+
+    feed = DemoFeed(route, clock=lambda: time.time() * args.speed) if args.demo else LiveFeed(args.line)
+    poll_s = args.poll / args.speed if args.demo else args.poll
+    colour = LINE_COLOURS.get(args.line, (255, 255, 255))
+
+    matrix = make_matrix(width, height)
+    canvas = matrix.CreateFrameCanvas()
+    print(f"{route.line_id}: {len(route)} stations on a {width}x{height} grid. Ctrl+C to stop.")
+    if "RGBMatrixEmulator" in type(matrix).__module__:
+        print("Emulator running: open http://localhost:8888 in your browser.")
+
+    predictions, fetched_at = [], 0.0
+    try:
+        while True:
+            now = time.time()
+            if now - fetched_at >= poll_s:
+                try:
+                    predictions = parse_predictions(feed.arrivals(), route.line_id)
+                    fetched_at = now
+                    print(f"{datetime.now():%H:%M:%S}  {len({p.vehicle_id for p in predictions})} trains")
+                except Exception as exc:
+                    print(f"warning: fetch failed ({exc}); retrying shortly")
+                    fetched_at = now - poll_s + 5  # try again in 5 s, keep showing old data
+            elapsed = (time.time() - fetched_at) * (args.speed if args.demo else 1)
+            positions = estimate_positions(predictions, route, elapsed_s=elapsed)
+            canvas.Clear()
+            draw_frame(canvas, layout, positions, colour, show_track=not args.no_track)
+            canvas = matrix.SwapOnVSync(canvas)
+            time.sleep(1 / args.fps)
+    except KeyboardInterrupt:
+        print("bye")
+
+
+def cmd_peek(args) -> None:
+    route = get_route(args.line, refresh=False)
+    feed = DemoFeed(route) if args.demo else LiveFeed(args.line)
+    positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id), route)
+    names = [s.name for s in route.stations]
+    print(f"{'train':<6} {'from':<24} {'  to':<26} {'progress':>8} {'next in':>8}   TfL says")
+    for p in sorted(positions, key=lambda p: (p.direction, p.to_idx)):
+        print(
+            f"{p.vehicle_id:<6} {names[p.from_idx]:<24} → {names[p.to_idx]:<24} "
+            f"{p.progress:>8.0%} {p.seconds_to_next:>7.0f}s   {p.current_location}"
+        )
+    print(f"\n{len(positions)} trains. Compare our estimate with TfL's own 'currentLocation' text.")
+
+
+def cmd_route(args) -> None:
+    route = get_route(args.line, refresh=not args.offline)
+    width, height = parse_size(args.size)
+    layout = build_layout(route, width, height, args.layout)
+    print(ascii_preview(layout, route))
+    for a, b in layout.collisions(route):
+        print(f"! {a} and {b} share a pixel")
+
+
+def cmd_record(args) -> None:
+    """Append one JSON line per poll. Load later with pandas/polars to study the data."""
+    out = tfl.DATA_DIR / "snapshots" / f"{args.line}-{datetime.now():%Y%m%d-%H%M}.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    end = time.time() + args.minutes * 60
+    with tfl.make_client() as client, out.open("a") as f:
+        while time.time() < end:
+            try:
+                rows = tfl.fetch_arrivals(client, args.line)
+                stamp = datetime.now(timezone.utc).isoformat()
+                f.write(json.dumps({"fetched_at": stamp, "arrivals": rows}) + "\n")
+                f.flush()
+                print(f"{stamp}  {len(rows)} predictions -> {out}")
+            except Exception as exc:
+                print(f"warning: {exc}")
+            time.sleep(args.every)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="tube-leds", description="Live tube trains on an LED matrix")
+    sub = parser.add_subparsers(dest="command")
+
+    def common(p):
+        p.add_argument("--line", default="bakerloo", help="TfL line id (default: bakerloo)")
+        return p
+
+    run = common(sub.add_parser("run", help="show trains on the (emulated) LED matrix"))
+    run.add_argument("--demo", action="store_true", help="use simulated trains instead of live data")
+    run.add_argument("--size", default="128x64", help="grid size WxH (default 128x64)")
+    run.add_argument("--layout", choices=["schematic", "geo"], default="schematic")
+    run.add_argument("--poll", type=float, default=30, help="seconds between TfL requests")
+    run.add_argument("--fps", type=float, default=20)
+    run.add_argument("--speed", type=float, default=1, help="demo only: fast-forward factor")
+    run.add_argument("--no-track", action="store_true", help="only light trains (like the real map)")
+    run.set_defaults(func=cmd_run)
+
+    peek = common(sub.add_parser("peek", help="print where every train is right now"))
+    peek.add_argument("--demo", action="store_true")
+    peek.set_defaults(func=cmd_peek)
+
+    route = common(sub.add_parser("route", help="refresh the station list and preview the layout"))
+    route.add_argument("--size", default="128x64")
+    route.add_argument("--layout", choices=["schematic", "geo"], default="schematic")
+    route.add_argument("--offline", action="store_true", help="don't contact TfL, use the cached file")
+    route.set_defaults(func=cmd_route)
+
+    record = common(sub.add_parser("record", help="save raw arrivals snapshots to data/snapshots"))
+    record.add_argument("--minutes", type=float, default=60)
+    record.add_argument("--every", type=float, default=30, help="seconds between snapshots")
+    record.set_defaults(func=cmd_record)
+
+    args = parser.parse_args(argv)
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    args.func(args)

@@ -1,0 +1,31 @@
+{
+  "line_id": "bakerloo",
+  "note": "Bundled starter copy (approximate coordinates). `uv run tube-leds route` refreshes it from TfL.",
+  "stations": [
+    {"id": "940GZZLUHAW", "name": "Harrow & Wealdstone", "lat": 51.5925, "lon": -0.3351},
+    {"id": "940GZZLUKEN", "name": "Kenton", "lat": 51.5817, "lon": -0.3171},
+    {"id": "940GZZLUSKT", "name": "South Kenton", "lat": 51.5708, "lon": -0.3081},
+    {"id": "940GZZLUNWY", "name": "North Wembley", "lat": 51.5626, "lon": -0.3040},
+    {"id": "940GZZLUWYC", "name": "Wembley Central", "lat": 51.5525, "lon": -0.2964},
+    {"id": "940GZZLUSGP", "name": "Stonebridge Park", "lat": 51.5441, "lon": -0.2754},
+    {"id": "940GZZLUHSN", "name": "Harlesden", "lat": 51.5363, "lon": -0.2576},
+    {"id": "940GZZLUWJN", "name": "Willesden Junction", "lat": 51.5321, "lon": -0.2443},
+    {"id": "940GZZLUKSL", "name": "Kensal Green", "lat": 51.5304, "lon": -0.2250},
+    {"id": "940GZZLUQPS", "name": "Queen's Park", "lat": 51.5341, "lon": -0.2047},
+    {"id": "940GZZLUKPK", "name": "Kilburn Park", "lat": 51.5351, "lon": -0.1939},
+    {"id": "940GZZLUMVL", "name": "Maida Vale", "lat": 51.5298, "lon": -0.1859},
+    {"id": "940GZZLUWKA", "name": "Warwick Avenue", "lat": 51.5233, "lon": -0.1835},
+    {"id": "940GZZLUPAH", "name": "Paddington", "lat": 51.5154, "lon": -0.1755},
+    {"id": "940GZZLUERB", "name": "Edgware Road (Bakerloo)", "lat": 51.5203, "lon": -0.1701},
+    {"id": "940GZZLUMYB", "name": "Marylebone", "lat": 51.5225, "lon": -0.1631},
+    {"id": "940GZZLUBST", "name": "Baker Street", "lat": 51.5226, "lon": -0.1571},
+    {"id": "940GZZLURGP", "name": "Regent's Park", "lat": 51.5234, "lon": -0.1466},
+    {"id": "940GZZLUOXC", "name": "Oxford Circus", "lat": 51.5152, "lon": -0.1415},
+    {"id": "940GZZLUPCC", "name": "Piccadilly Circus", "lat": 51.5098, "lon": -0.1342},
+    {"id": "940GZZLUCHX", "name": "Charing Cross", "lat": 51.5080, "lon": -0.1247},
+    {"id": "940GZZLUEMB", "name": "Embankment", "lat": 51.5074, "lon": -0.1223},
+    {"id": "940GZZLUWLO", "name": "Waterloo", "lat": 51.5036, "lon": -0.1143},
+    {"id": "940GZZLULBN", "name": "Lambeth North", "lat": 51.4991, "lon": -0.1115},
+    {"id": "940GZZLUEAC", "name": "Elephant & Castle", "lat": 51.4943, "lon": -0.1001}
+  ]
+}

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bakerloo line · live LED map</title>
+<meta name="description" content="Live Bakerloo line trains on a simulated LED matrix, estimated from TfL arrival predictions by Python running in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23B36305'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0d0d10;
+    --panel: #141418;
+    --text: #e9e7e3;
+    --muted: #8d8a85;
+    --line: #b36305;
+    --line-soft: #b3630533;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 14px; }
+  h1 {
+    margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.01em;
+    padding-left: 12px; border-left: 6px solid var(--line);
+  }
+  .status { margin: 0; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 7px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: #3ddc84; box-shadow: 0 0 8px #3ddc84aa; animation: pulse 2s infinite; }
+  .dot.sim { background: #e8b339; }
+  @keyframes pulse { 50% { opacity: 0.45; } }
+
+  .board {
+    position: relative; background: #08080a; border-radius: 10px;
+    border: 1px solid #222228; padding: 10px; overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: auto; touch-action: manipulation; }
+  #loading {
+    position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+    color: var(--muted); font-size: 14px; padding: 20px;
+  }
+  #tip {
+    position: absolute; pointer-events: none; transform: translate(-50%, -130%);
+    background: #000c; border: 1px solid #333; color: var(--text); font-size: 12px;
+    padding: 3px 7px; border-radius: 5px; white-space: nowrap; display: none;
+  }
+
+  .controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 22px; flex-wrap: wrap; }
+  .toggle { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .toggle input { accent-color: var(--line); width: 16px; height: 16px; }
+  .seg { display: inline-flex; background: var(--panel); border: 1px solid #26262c; border-radius: 8px; padding: 3px; }
+  .seg button {
+    font: inherit; font-size: 13px; color: var(--muted); background: none; border: 0;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .seg button.on { background: #26262c; color: var(--text); }
+
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; }
+  #trains { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; background: #1d1d22; border-radius: 8px; overflow: hidden; }
+  #trains li { background: var(--panel); padding: 9px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+  .hop { font-size: 14px; }
+  .hop b { font-weight: 600; }
+  .eta { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; text-align: right; }
+  .sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  .bar { flex: none; width: 70px; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--line); }
+  .empty { color: var(--muted); font-size: 14px; padding: 12px; background: var(--panel); }
+
+  footer { margin-top: 26px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  footer a { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bakerloo line</h1>
+    <p class="status"><span class="dot" id="dot"></span><span id="status">Starting…</span></p>
+  </header>
+
+  <div class="board">
+    <canvas id="board" width="10" height="10" aria-label="LED map of the Bakerloo line"></canvas>
+    <div id="loading">Starting Python in your browser…<br>(the first visit downloads ~10 MB)</div>
+    <div id="tip"></div>
+  </div>
+
+  <div class="controls">
+    <label class="toggle"><input type="checkbox" id="track" checked> Show track</label>
+    <div class="seg" role="group" aria-label="Data source">
+      <button data-mode="live" class="on">Live</button>
+      <button data-mode="demo">Simulated</button>
+    </div>
+  </div>
+
+  <h2>Trains right now <span id="count"></span></h2>
+  <ol id="trains"><li class="empty">Waiting for data…</li></ol>
+
+  <footer>
+    Powered by TfL Open Data. Trains don't report their position, so it's estimated from
+    arrival predictions by the same Python code that drives the LED panel, running here in
+    your browser via Pyodide. White dot = train, orange = the way it's heading. Tap a dot to
+    see the station.<br>
+    <a href="https://github.com/JT-39/ldn-tube-leds">Source on GitHub</a> · build __BUILD__
+  </footer>
+</main>
+
+<script type="module">
+const params = new URLSearchParams(location.search);
+const PYODIDE_URL = params.get("pyodide") ?? "https://cdn.jsdelivr.net/npm/pyodide@314.0.8/";
+const LINE = "bakerloo";
+const TFL_URL = `https://api.tfl.gov.uk/Line/${LINE}/Arrivals`;
+const POLL_MS = 30_000;
+const FPS = 20;
+const PAD = 2; // empty LEDs around the line
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("board"), ctx = canvas.getContext("2d");
+const now = () => Date.now() / 1000;
+
+let board, bounds, stations, cell = 6, background;
+let mode = "live";          // what the user asked for
+let showingSimulated = false; // true when live failed and we fell back
+let lastLiveOk = null;
+let showTrack = true;
+
+function setStatus(text, kind) {
+  $("status").textContent = text;
+  $("dot").className = "dot " + (kind ?? "");
+}
+
+// ---------------------------------------------------------------- start Python
+async function boot() {
+  try {
+    setStatus("Loading Python…");
+    const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
+    const py = await loadPyodide({ indexURL: PYODIDE_URL });
+    setStatus("Loading the model…");
+    const [zip, routeJson] = await Promise.all([
+      fetch("tube_leds.zip?v=__BUILD__").then((r) => r.arrayBuffer()),
+      fetch(`routes/${LINE}.json?v=__BUILD__`).then((r) => r.text()),
+    ]);
+    py.unpackArchive(zip, "zip");
+    const web = py.pyimport("tube_leds.web");
+    board = web.Board(routeJson, 128, 64);
+    bounds = board.bounds().toJs();
+    stations = JSON.parse(board.stations());
+    $("loading").remove();
+    resize();
+    await tick();
+    setInterval(tick, POLL_MS);
+    requestAnimationFrame(frame);
+    setInterval(renderTrains, 1000);
+  } catch (err) {
+    console.error(err);
+    $("loading").textContent = "Couldn't start: " + err.message;
+    setStatus("Error", "");
+  }
+}
+
+// ---------------------------------------------------------------- data
+async function tick() {
+  if (mode === "demo") {
+    board.update_demo(now());
+    showingSimulated = true;
+    setStatus("Simulated trains (not live data)", "sim");
+    return;
+  }
+  try {
+    const res = await fetch(TFL_URL);
+    if (!res.ok) throw new Error(`TfL returned ${res.status}`);
+    const n = board.update(await res.text(), now());
+    lastLiveOk = new Date();
+    showingSimulated = false;
+    setStatus(`Live · ${n} trains · updated ${lastLiveOk.toLocaleTimeString("en-GB")}`, "live");
+  } catch (err) {
+    console.warn("live fetch failed:", err);
+    if (lastLiveOk) {
+      setStatus(`Live · last update ${lastLiveOk.toLocaleTimeString("en-GB")} · retrying`, "live");
+    } else {
+      board.update_demo(now());
+      showingSimulated = true;
+      setStatus("Couldn't reach TfL, so showing simulated trains. Retrying every 30 s.", "sim");
+    }
+  }
+  renderTrains();
+}
+
+// ---------------------------------------------------------------- drawing
+function resize() {
+  if (!bounds) return;
+  const [x0, y0, x1, y1] = bounds;
+  const cols = x1 - x0 + 1 + 2 * PAD, rows = y1 - y0 + 1 + 2 * PAD;
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.parentElement.clientWidth - 20;
+  cell = Math.max(3, Math.floor((cssWidth * dpr) / cols));
+  canvas.width = cols * cell;
+  canvas.height = rows * cell;
+
+  // Unlit LEDs never change, so draw them once.
+  background = document.createElement("canvas");
+  background.width = canvas.width;
+  background.height = canvas.height;
+  const b = background.getContext("2d");
+  b.fillStyle = "#08080a";
+  b.fillRect(0, 0, background.width, background.height);
+  b.fillStyle = "#1a1a20";
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) led(b, x, y);
+}
+
+function led(c, x, y) {
+  c.beginPath();
+  c.arc((x + 0.5) * cell, (y + 0.5) * cell, cell * 0.34, 0, Math.PI * 2);
+  c.fill();
+}
+
+let lastFrame = 0;
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (t - lastFrame < 1000 / FPS) return;
+  lastFrame = t;
+  const proxy = board.lit_pixels(now(), showTrack);
+  const lit = proxy.toJs();
+  proxy.destroy();
+  const [x0, y0] = bounds;
+  ctx.drawImage(background, 0, 0);
+  for (let i = 0; i < lit.length; i += 5) {
+    const [x, y, r, g, b] = lit.slice(i, i + 5);
+    const colour = `rgb(${r},${g},${b})`;
+    const bright = r + g + b > 300;
+    ctx.shadowColor = colour;
+    ctx.shadowBlur = bright ? cell * 1.2 : cell * 0.4;
+    ctx.fillStyle = colour;
+    led(ctx, x - x0 + PAD, y - y0 + PAD);
+  }
+  ctx.shadowBlur = 0;
+}
+
+// ---------------------------------------------------------------- train list
+function renderTrains() {
+  const trains = JSON.parse(board.trains(now()));
+  $("count").textContent = trains.length ? `· ${trains.length}` : "";
+  const list = $("trains");
+  if (!trains.length) {
+    list.innerHTML = `<li class="empty">No trains right now. The Bakerloo line doesn't run overnight.</li>`;
+    return;
+  }
+  list.replaceChildren(...trains.map((t) => {
+    const li = document.createElement("li");
+    const hop = t.from === t.to ? `At <b>${t.to}</b>` : `${t.from} → <b>${t.to}</b>`;
+    const eta = t.seconds < 30 ? "due" : t.seconds < 90 ? `${t.seconds}s` : `${Math.round(t.seconds / 60)} min`;
+    li.innerHTML = `
+      <span class="hop">${hop}</span><span class="eta">${eta}</span>
+      <span class="sub"><span class="bar"><i style="width:${Math.round(t.progress * 100)}%"></i></span>
+        ${t.towards ? "towards " + t.towards : ""}</span>`;
+    li.title = `train ${t.id} · TfL says: ${t.tfl}`;
+    return li;
+  }));
+}
+
+// ---------------------------------------------------------------- interaction
+function stationAt(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / rect.width;
+  const lx = Math.floor(((evt.clientX - rect.left) * scale) / cell) + bounds[0] - PAD;
+  const ly = Math.floor(((evt.clientY - rect.top) * scale) / cell) + bounds[1] - PAD;
+  let best = null, bestD = 3;
+  for (const s of stations) {
+    const d = Math.max(Math.abs(s.x - lx), Math.abs(s.y - ly));
+    if (d < bestD) { best = s; bestD = d; }
+  }
+  return { best, rect };
+}
+
+function showTip(evt) {
+  if (!stations) return;
+  const { best, rect } = stationAt(evt);
+  const tip = $("tip");
+  if (!best) { tip.style.display = "none"; return; }
+  const px = rect.width / (canvas.width / cell);
+  tip.textContent = best.name;
+  tip.style.left = `${10 + (best.x - bounds[0] + PAD + 0.5) * px}px`;
+  tip.style.top = `${10 + (best.y - bounds[1] + PAD) * px}px`;
+  tip.style.display = "block";
+}
+canvas.addEventListener("pointermove", showTip);
+canvas.addEventListener("pointerdown", showTip);
+canvas.addEventListener("pointerleave", () => ($("tip").style.display = "none"));
+
+$("track").addEventListener("change", (e) => (showTrack = e.target.checked));
+document.querySelectorAll(".seg button").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    mode = btn.dataset.mode;
+    document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b === btn));
+    if (board) tick();
+  })
+);
+window.addEventListener("resize", resize);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && board) tick();
+});
+
+boot();
+</script>
+</body>
+</html>

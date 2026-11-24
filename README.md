@@ -1,10 +1,14 @@
 # ldn-tube-leds — step 1: the Bakerloo line
 
 [![tests](https://github.com/JT-39/ldn-tube-leds/actions/workflows/tests.yml/badge.svg)](https://github.com/JT-39/ldn-tube-leds/actions/workflows/tests.yml)
+[![website](https://github.com/JT-39/ldn-tube-leds/actions/workflows/pages.yml/badge.svg)](https://jt-39.github.io/ldn-tube-leds/)
 
 Live Bakerloo line trains on an LED matrix. For now the matrix is an emulator in
 your browser. The emulator uses the same API as the real Raspberry Pi library,
 so this code will drive real panels later without changes.
+
+**Website: <https://jt-39.github.io/ldn-tube-leds/>.** The same Python model runs
+in the browser via Pyodide (see [Website](#website) below).
 
 ![demo](docs/bakerloo_demo.gif)
 
@@ -20,7 +24,7 @@ uv run tube-leds run --demo --speed 10   # simulated trains, 10x speed → opens
 uv run tube-leds route                   # fetch the real station list from TfL + ASCII preview
 uv run tube-leds peek                    # table of where every live train is right now
 uv run tube-leds run                     # the real thing
-uv run pytest                            # 17 tests
+uv run pytest                            # 20 tests
 ```
 
 Run commands from the project folder: data lives in `./data`.
@@ -57,6 +61,21 @@ Two bits that are fun from a data science angle:
 3. **Fit the run-time model.** Collect real data with `uv run tube-leds record --minutes 120`. Load `data/snapshots/*.jsonl` into polars or pandas and explode the `arrivals` lists. For each train, find when its "next stop" changes: that's a departure. Measure station-to-station times, regress them on distance, and plug the fitted overhead and speed into `default_run_time`.
 4. **Try another unbranched line.** `uv run tube-leds route --line victoria`, then `run --line victoria`. Jubilee and Waterloo & City work too. Branched lines (Northern, District…) need step 2.
 5. **Make it look like the real thing.** `run --no-track` lights only the trains, as on Fraser's map, where the printed map provides the lines.
+
+## Website
+
+The site is static: GitHub Pages serves a few files and your browser does all the work.
+
+```
+web/index.html ─┐                      ┌─ fetch TfL arrivals (JS, every 30 s)
+src/tube_leds/  ├─ scripts/build_site.py ─► _site/ ─► browser ─┤
+data/routes/   ─┘                      └─ Pyodide runs tube_leds.web.Board → canvas
+```
+
+- `src/tube_leds/web.py` is the bridge: a `Board` the page feeds TfL JSON into and reads lit pixels out of. It reuses `positions`, `layout` and `draw_frame` unchanged. That's why `tfl.py` only imports `httpx` when it actually makes a request.
+- TfL's API allows browser requests (CORS), so no server is needed. If TfL can't be reached, the page says so and shows simulated trains.
+- Preview locally: `uv run python scripts/build_site.py && python -m http.server -d _site 8000`, then open <http://localhost:8000>.
+- Every push to `main` runs the tests, then builds and publishes the site (`.github/workflows/pages.yml`).
 
 ## Roadmap
 

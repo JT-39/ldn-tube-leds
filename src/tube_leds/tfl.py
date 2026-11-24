@@ -21,8 +21,10 @@ import os
 from dataclasses import asdict, dataclass
 from functools import cached_property
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import httpx
+if TYPE_CHECKING:  # only for type hints; the real import happens in make_client()
+    import httpx
 
 API = "https://api.tfl.gov.uk"
 DATA_DIR = Path(os.environ.get("TUBE_LEDS_DATA", "data"))
@@ -100,6 +102,10 @@ def load_route(line_id: str) -> Route:
 
 
 def make_client() -> httpx.Client:
+    # Imported here, not at the top, so the rest of this module (Station, Route...)
+    # also works in the browser, where the web page does the fetching instead.
+    import httpx
+
     params = {}
     if key := os.environ.get("TFL_APP_KEY"):
         params["app_key"] = key

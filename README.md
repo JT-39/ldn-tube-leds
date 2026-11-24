@@ -1,4 +1,6 @@
-# tube-leds — step 1: the Bakerloo line
+# ldn-tube-leds — step 1: the Bakerloo line
+
+[![tests](https://github.com/JT-39/ldn-tube-leds/actions/workflows/tests.yml/badge.svg)](https://github.com/JT-39/ldn-tube-leds/actions/workflows/tests.yml)
 
 Live Bakerloo line trains on an LED matrix. For now the matrix is an emulator in
 your browser. The emulator uses the same API as the real Raspberry Pi library,
@@ -6,9 +8,13 @@ so this code will drive real panels later without changes.
 
 ![demo](docs/bakerloo_demo.gif)
 
+*(The animation uses the simulated demo feed, not live data.)*
+
 ## Quick start
 
 ```bash
+git clone https://github.com/JT-39/ldn-tube-leds.git
+cd ldn-tube-leds
 uv sync
 uv run tube-leds run --demo --speed 10   # simulated trains, 10x speed → opens http://localhost:8888
 uv run tube-leds route                   # fetch the real station list from TfL + ASCII preview

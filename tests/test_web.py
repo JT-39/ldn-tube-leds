@@ -70,3 +70,29 @@ def test_station_lines_default_to_one():
     from tube_leds.tfl import Station
 
     assert Station("X", "Somewhere", 51.5, -0.1).lines == 1
+
+
+def test_check_summary_and_per_train_verdicts(board):
+    board.update_demo(now=2000.0)
+    summary = json.loads(board.check_summary())
+    assert summary["checked"] == 10 and summary["rate"] == 1.0  # the demo feed is self-consistent
+    assert {t["check"] for t in json.loads(board.trains(now=2000.0))} == {"agree"}
+
+
+def test_arrivals_at_station_like_a_platform_board(board):
+    arrivals = [
+        {"vehicleId": "201", "lineId": "bakerloo", "naptanId": "940GZZLUOXC", "timeToStation": 150,
+         "destinationNaptanId": "940GZZLUEAC", "currentLocation": "At Regent's Park"},
+        {"vehicleId": "202", "lineId": "bakerloo", "naptanId": "940GZZLUOXC", "timeToStation": 40,
+         "destinationNaptanId": "940GZZLUQPS", "currentLocation": "Between Piccadilly Circus and Oxford Circus"},
+        {"vehicleId": "202", "lineId": "bakerloo", "naptanId": "940GZZLURGP", "timeToStation": 160,
+         "destinationNaptanId": "940GZZLUQPS", "currentLocation": "Between Piccadilly Circus and Oxford Circus"},
+    ]
+    board.update(json.dumps(arrivals), now=0.0)
+    oxc = [s["name"] for s in json.loads(board.stations())].index("Oxford Circus")
+    board_view = json.loads(board.arrivals_at(oxc, now=10.0))
+    assert board_view["station"] == "Oxford Circus"
+    assert [(a["destination"], a["seconds"], a["towards"]) for a in board_view["arrivals"]] == [
+        ("Queen's Park", 30, "Harrow & Wealdstone"),
+        ("Elephant & Castle", 140, "Elephant & Castle"),
+    ]

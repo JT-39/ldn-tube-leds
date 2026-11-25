@@ -53,9 +53,9 @@ class DemoFeed:
             upcoming += [(t + self.cycle_s, i, d) for t, i, d in self.events]
             direction = upcoming[0][2]
             dest = stations[n - 1 if direction > 0 else 0]
-            for t, i, d in upcoming[:3]:
-                if d != direction:
-                    break  # the train terminates before this, so TfL wouldn't list it
+            for t, i, d in upcoming[:15]:
+                if d != direction or t - phase > 25 * 60:
+                    break  # past its terminus, or too far ahead: TfL wouldn't list it
                 prev = stations[i - d]
                 out.append(
                     {

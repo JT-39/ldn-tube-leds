@@ -23,8 +23,9 @@ uv sync
 uv run tube-leds run --demo --speed 10   # simulated trains, 10x speed → opens http://localhost:8888
 uv run tube-leds route                   # fetch the real station list from TfL + ASCII preview
 uv run tube-leds peek                    # table of where every live train is right now
+uv run tube-leds check                   # how often we agree with TfL's own location text
 uv run tube-leds run                     # the real thing
-uv run pytest                            # 27 tests
+uv run pytest                            # 42 tests
 ```
 
 Run commands from the project folder: data lives in `./data`.
@@ -62,6 +63,41 @@ Two bits that are fun from a data science angle:
 4. **Try another unbranched line.** `uv run tube-leds route --line victoria`, then `run --line victoria`. Jubilee and Waterloo & City work too. Branched lines (Northern, District…) need step 2.
 5. **Make it look like the real thing.** `run --no-track` lights only the trains, as on Fraser's map, where the printed map provides the lines.
 6. **One track or two.** By default each direction has its own track and trains keep left, so direction is obvious at a glance. `--tracks 1` puts both directions on one line. `layout.left_offsets` is the geometry: a bit of vector maths (normals and miters) worth reading.
+
+## Is the map right?
+
+Almost every source of Tube times (platform boards, TfL Go, Apple Maps, other live
+maps) is fed by the same TfL predictions we use. So comparing with them tests
+*our reading* of the data. Only the real world tests TfL itself. That gives three levels:
+
+**1. Do we read TfL's data correctly?** (automatic)
+TfL attaches its own free-text location to every train ("Between Paddington and
+Edgware Road"). We never use it to place trains, so it makes a good independent check.
+`validate.py` pulls out the station names and checks they match our estimated segment.
+
+```bash
+uv run tube-leds check                     # right now: agreement rate + each disagreement
+uv run tube-leds record --minutes 120      # collect data...
+uv run tube-leds check --snapshots data/snapshots/*.jsonl   # ...then score it, and see where we go wrong
+```
+
+The website shows the same thing: an agreement rate above the train list, and ✓/≠
+next to TfL's text for each train. On simulated data it's 100% by design, which only
+proves the plumbing works.
+
+**2. Do our times match other apps?**
+Tap a station on the website to see its next trains, grouped like a platform board.
+Open the same station in TfL Go or Apple Maps (departures) and compare: they should
+agree to within about a minute. Apps refresh at different moments, and we
+dead-reckon between our 30-second updates. For positions, compare the map
+side by side with londonunderground.live.
+
+**3. Is it true?** (the only fully independent test)
+Stand on a platform with the station board open. Note when it says "due" and when the
+train actually arrives. Or ride a train: find your dot by its next stop and
+direction, and note when it reaches each station compared with when you do. A dozen
+observations make a small dataset of errors to analyse. That's also how you'd fit
+the run-time model properly (see "Things to try").
 
 ## Website
 

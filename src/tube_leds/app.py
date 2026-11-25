@@ -183,6 +183,47 @@ def cmd_record(args) -> None:
             time.sleep(args.every)
 
 
+def cmd_check(args) -> None:
+    """How often does our estimate agree with TfL's own 'currentLocation' text?"""
+    from collections import Counter
+
+    from .validate import check_positions, summarise
+
+    route = get_route(args.line, refresh=False)
+    names = [s.name for s in route.stations]
+
+    if args.snapshots:
+        # Evaluate every snapshot recorded with `tube-leds record`, at the moment it was fetched.
+        checks = []
+        for path in args.snapshots:
+            with open(path) as f:
+                for line in f:
+                    raw = json.loads(line)["arrivals"]
+                    checks += check_positions(estimate_positions(parse_predictions(raw, route.line_id), route), route)
+        source = f"{len(args.snapshots)} snapshot file(s)"
+    else:
+        feed = DemoFeed(route) if args.demo else LiveFeed(args.line)
+        positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id), route)
+        checks = check_positions(positions, route)
+        source = "simulated feed" if args.demo else "live TfL data"
+
+    s = summarise(checks)
+    print(f"Checked against TfL's own location text ({source}):")
+    if not s["checked"]:
+        print("  nothing to compare (no trains, or TfL gave no station names)")
+        return
+    print(f"  agree {s['agree']} / {s['checked']} = {s['rate']:.0%}   (plus {s['unknown']} with no station named)")
+    wrong = [c for c in checks if c.verdict == "disagree"]
+    if wrong and not args.snapshots:
+        print("\nDisagreements:")
+        for c in wrong:
+            print(f"  train {c.vehicle_id:<5} we say {names[c.from_idx]} → {names[c.to_idx]};  TfL says: {c.tfl_text}")
+    if wrong and args.snapshots:
+        print("\nWhere we disagree most (our segment):")
+        for (a, b), n in Counter((c.from_idx, c.to_idx) for c in wrong).most_common(8):
+            print(f"  {n:>4}  {names[a]} → {names[b]}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="tube-leds", description="Live tube trains on an LED matrix")
     sub = parser.add_subparsers(dest="command")
@@ -217,6 +258,11 @@ def main(argv: list[str] | None = None) -> None:
     record.add_argument("--minutes", type=float, default=60)
     record.add_argument("--every", type=float, default=30, help="seconds between snapshots")
     record.set_defaults(func=cmd_record)
+
+    check = common(sub.add_parser("check", help="compare our positions with TfL's own location text"))
+    check.add_argument("--demo", action="store_true", help="check the simulated feed (sanity test)")
+    check.add_argument("--snapshots", nargs="+", metavar="FILE", help="evaluate recorded .jsonl files instead")
+    check.set_defaults(func=cmd_check)
 
     args = parser.parse_args(argv)
     if not args.command:

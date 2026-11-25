@@ -72,6 +72,23 @@
   .bar { flex: none; width: 70px; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--line); }
   .empty { color: var(--muted); font-size: 14px; padding: 12px; background: var(--panel); }
+  .tfl { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+  .tfl .mark { font-weight: 700; margin-right: 5px; }
+  .tfl .agree { color: #3ddc84; }
+  .tfl .disagree { color: #e8b339; }
+  .agree-line { margin: -2px 0 10px; font-size: 13px; color: var(--muted); }
+  .agree-line b { color: var(--text); }
+
+  .station { background: var(--panel); border: 1px solid #26262c; border-radius: 10px; padding: 12px 14px; margin: 12px 0 0; }
+  .station-head { display: flex; justify-content: space-between; align-items: center; }
+  .station h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .station button { background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 2px 6px; }
+  .station-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; margin-top: 10px; }
+  .station-cols h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .station-cols ol { list-style: none; margin: 0; padding: 0; }
+  .station-cols li { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; padding: 3px 0; border-bottom: 1px solid #1f1f25; }
+  .station-cols li span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .station .hint { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 
   footer { margin-top: 26px; color: var(--muted); font-size: 12px; line-height: 1.6; }
   footer a { color: var(--text); }
@@ -92,6 +109,15 @@
 
   <p class="legend" id="legend"></p>
 
+  <section class="station" id="station" hidden>
+    <div class="station-head">
+      <h3 id="station-name"></h3>
+      <button id="station-close" aria-label="Close">✕</button>
+    </div>
+    <div class="station-cols" id="station-arrivals"></div>
+    <p class="hint">Compare with the platform board, TfL Go or Apple Maps for this station: times should match to within about a minute.</p>
+  </section>
+
   <div class="controls">
     <div class="toggles">
       <label class="toggle"><input type="checkbox" id="track" checked> Track</label>
@@ -104,12 +130,13 @@
   </div>
 
   <h2>Trains right now <span id="count"></span></h2>
+  <p class="agree-line" id="agree"></p>
   <ol id="trains"><li class="empty">Waiting for data…</li></ol>
 
   <footer>
     Powered by TfL Open Data. Trains don't report their position, so it's estimated from
     arrival predictions by the same Python code that drives the LED panel, running here in
-    your browser via Pyodide. Each direction has its own track and trains keep left, as on
+    your browser via Pyodide. Tap a station to see its next trains. Each direction has its own track and trains keep left, as on
     real UK railways. White dot = train, orange tail = where it's just been. Stations without
     room for a label show their name when tapped.<br>
     <a href="https://github.com/JT-39/ldn-tube-leds">Source on GitHub</a> · build __BUILD__
@@ -135,6 +162,7 @@ let showingSimulated = false; // true when live failed and we fell back
 let lastLiveOk = null;
 let showTrack = true;
 let showLabels = true, labelLayer = null, staticPx = [];
+let selected = null; // index of the tapped station
 
 function setStatus(text, kind) {
   $("status").textContent = text;
@@ -166,7 +194,7 @@ async function boot() {
     await tick();
     setInterval(tick, POLL_MS);
     requestAnimationFrame(frame);
-    setInterval(renderTrains, 1000);
+    setInterval(() => { renderTrains(); renderStation(); }, 1000);
   } catch (err) {
     console.error(err);
     $("loading").textContent = "Couldn't start: " + err.message;
@@ -200,6 +228,7 @@ async function tick() {
     }
   }
   renderTrains();
+  renderStation();
 }
 
 // ---------------------------------------------------------------- drawing
@@ -418,6 +447,14 @@ function frame(t) {
   }
   ctx.shadowBlur = 0;
   if (showLabels && labelLayer) ctx.drawImage(labelLayer, 0, 0);
+  if (selected !== null) { // ring round the tapped station
+    const [x, y] = toCanvas(stations[selected].x, stations[selected].y);
+    ctx.strokeStyle = "#ffffffcc";
+    ctx.lineWidth = Math.max(1.5, cell * 0.25);
+    ctx.beginPath();
+    ctx.arc(x, y, cell * 2.4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 // ---------------------------------------------------------------- legend
@@ -438,6 +475,7 @@ function renderTrains() {
   const list = $("trains");
   if (!trains.length) {
     list.innerHTML = `<li class="empty">No trains right now. The Bakerloo line doesn't run overnight.</li>`;
+    $("agree").textContent = "";
     return;
   }
   list.replaceChildren(...trains.map((t) => {
@@ -447,10 +485,53 @@ function renderTrains() {
     li.innerHTML = `
       <span class="hop">${hop}</span><span class="eta">${eta}</span>
       <span class="sub"><span class="bar"><i style="width:${Math.round(t.progress * 100)}%"></i></span>
-        ${t.towards ? "towards " + t.towards : ""}</span>`;
-    li.title = `train ${t.id} · TfL says: ${t.tfl}`;
+        ${t.towards ? "towards " + t.towards : ""}</span>
+      <span class="tfl"></span>`;
+    if (t.tfl) {
+      const mark = { agree: ["✓", "agree"], disagree: ["≠", "disagree"] }[t.check];
+      const tfl = li.querySelector(".tfl");
+      if (mark) tfl.innerHTML = `<span class="mark ${mark[1]}">${mark[0]}</span>`;
+      tfl.append("TfL: " + t.tfl); // TfL's text goes in as plain text, never HTML
+    }
+    li.title = `train ${t.id}`;
     return li;
   }));
+
+  const s = JSON.parse(board.check_summary());
+  $("agree").innerHTML = s.checked
+    ? `Our positions agree with TfL's own location text for <b>${s.agree} of ${s.checked}</b> trains (${Math.round(s.rate * 100)}%)` +
+      (showingSimulated ? " — simulated data, so this only tests the plumbing." : ".")
+    : "";
+}
+
+// ---------------------------------------------------------------- station board
+function renderStation() {
+  const panel = $("station");
+  if (selected === null || !board) { panel.hidden = true; return; }
+  const data = JSON.parse(board.arrivals_at(selected, now()));
+  $("station-name").textContent = data.station;
+  const groups = new Map();
+  for (const a of data.arrivals) {
+    const key = a.towards || "Other";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  const cols = [...groups.entries()].map(([towards, rows]) => {
+    const col = document.createElement("div");
+    col.innerHTML = `<h4></h4><ol></ol>`;
+    col.querySelector("h4").textContent = towards === "Other" ? "Other" : `Towards ${towards}`;
+    col.querySelector("ol").replaceChildren(...rows.slice(0, 4).map((a) => {
+      const li = document.createElement("li");
+      const when = a.seconds < 30 ? "due" : `${Math.max(1, Math.round(a.seconds / 60))} min`;
+      li.innerHTML = "<span></span><span></span>";
+      li.firstChild.textContent = a.destination || a.towards;
+      li.lastChild.textContent = when;
+      return li;
+    }));
+    return col;
+  });
+  $("station-arrivals").replaceChildren(...(cols.length ? cols : [Object.assign(document.createElement("p"), { className: "hint", textContent: "No trains due." })]));
+  panel.hidden = false;
 }
 
 // ---------------------------------------------------------------- interaction
@@ -481,6 +562,13 @@ function showTip(evt) {
 canvas.addEventListener("pointermove", showTip);
 canvas.addEventListener("pointerdown", showTip);
 canvas.addEventListener("pointerleave", () => ($("tip").style.display = "none"));
+canvas.addEventListener("click", (evt) => {
+  const { best } = stationAt(evt);
+  if (!best) return;
+  selected = stations.indexOf(best);
+  renderStation();
+});
+$("station-close").addEventListener("click", () => { selected = null; renderStation(); });
 
 $("track").addEventListener("change", (e) => (showTrack = e.target.checked));
 $("labels").addEventListener("change", (e) => (showLabels = e.target.checked));

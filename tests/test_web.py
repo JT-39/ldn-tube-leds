@@ -50,5 +50,23 @@ def test_track_toggle_and_bounds(board):
     assert 0 <= x0 < x1 < 128 and 0 <= y0 < y1 < 64
 
 
+def test_static_pixels_cover_track_and_stations(board):
+    flat = board.static_pixels()
+    pts = set(zip(flat[::2], flat[1::2]))
+    assert board.layout.track_pixels() <= pts
+    assert all(p in pts for mark in board.layout.station_marks for p in mark)
+
+
 def test_track_legend(board):
     assert json.loads(board.tracks()) == {"upper": "Elephant & Castle", "lower": "Harrow & Wealdstone"}
+
+
+def test_stations_carry_line_counts_for_label_priority(board):
+    stations = {s["name"]: s for s in json.loads(board.stations())}
+    assert stations["Baker Street"]["lines"] > stations["Kenton"]["lines"] == 1
+
+
+def test_station_lines_default_to_one():
+    from tube_leds.tfl import Station
+
+    assert Station("X", "Somewhere", 51.5, -0.1).lines == 1

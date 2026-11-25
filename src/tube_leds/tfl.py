@@ -41,6 +41,7 @@ class Station:
     name: str
     lat: float
     lon: float
+    lines: int = 1  # how many lines stop here (1 = not an interchange); used to prioritise labels
 
     def distance_m(self, other: Station) -> float:
         """Straight-line distance in metres (haversine)."""
@@ -156,6 +157,7 @@ def fetch_route(client: httpx.Client, line_id: str) -> Route:
             name=clean_name(coords[n]["name"]),
             lat=float(coords[n]["lat"]),
             lon=float(coords[n]["lon"]),
+            lines=len(coords[n].get("lines") or []) or 1,
         )
         for n in longest
         if n in coords

@@ -64,6 +64,11 @@ class Board:
         xs, ys = [x for x, _ in pts], [y for _, y in pts]
         return [min(xs), min(ys), max(xs), max(ys)]
 
+    def static_pixels(self) -> list[int]:
+        """Flat [x, y, x, y, ...] of every track and station LED (what labels must avoid)."""
+        pts = self.layout.track_pixels() | {p for mark in self.layout.station_marks for p in mark}
+        return [v for p in sorted(pts) for v in p]
+
     def tracks(self) -> str:
         """JSON like {"upper": "Elephant & Castle", "lower": "Harrow & Wealdstone"}, for the legend."""
         return json.dumps(self.layout.describe_tracks(self.route))
@@ -76,9 +81,12 @@ class Board:
         return [v for (x, y), rgb in canvas.pixels.items() for v in (x, y, *rgb)]
 
     def stations(self) -> str:
-        """JSON list of {name, x, y}, for labels and tooltips."""
+        """JSON list of {name, x, y, lines}, for labels and tooltips."""
         return json.dumps(
-            [{"name": s.name, "x": x, "y": y} for s, (x, y) in zip(self.route.stations, self.layout.station_px)]
+            [
+                {"name": s.name, "x": x, "y": y, "lines": s.lines}
+                for s, (x, y) in zip(self.route.stations, self.layout.station_px)
+            ]
         )
 
     def trains(self, now: float) -> str:

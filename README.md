@@ -74,6 +74,7 @@ data/routes/   ─┘                      └─ Pyodide runs tube_leds.web.Boa
 ```
 
 - `src/tube_leds/web.py` is the bridge: a `Board` the page feeds TfL JSON into and reads lit pixels out of. It reuses `positions`, `layout` and `draw_frame` unchanged. That's why `tfl.py` only imports `httpx` when it actually makes a request.
+- **Station labels** are placed by a small map-labelling optimiser in `web/index.html`. For each station it lists candidate spots (beside it, round the corner, at 45° like a dense tube map) and rejects any that touch the track or would sit closer to another station. Then it places labels greedily, ends and interchanges first (TfL's route data says how many lines stop at each station), with 40 seeded random restarts to keep the best layout. Unlabelled stations show their name when tapped.
 - TfL's API allows browser requests (CORS), so no server is needed. If TfL can't be reached, the page says so and shows simulated trains.
 - Preview locally: `uv run python scripts/build_site.py && python -m http.server -d _site 8000`, then open <http://localhost:8000>.
 - Every push to `main` runs the tests, then builds and publishes the site (`.github/workflows/pages.yml`).

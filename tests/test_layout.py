@@ -34,16 +34,48 @@ def test_schematic_fits_and_has_no_collisions(bakerloo, size):
 
 def test_geo_layout_collides_on_a_small_panel(bakerloo):
     # The reason tube maps are schematic.
-    layout = build_layout(bakerloo, 64, 32, "geo")
+    layout = build_layout(bakerloo, 64, 32, "geo", tracks=1)
     assert ("Charing Cross", "Embankment") in layout.collisions(bakerloo)
 
 
-def test_train_pixels_follow_direction(bakerloo):
-    layout = build_layout(bakerloo, 128, 64)
+def test_single_track_trains_share_the_line(bakerloo):
+    layout = build_layout(bakerloo, 128, 64, tracks=1)
     a, b = layout.station_px[0], layout.station_px[1]
-    east = TrainPosition("x", 0, 1, 0.0, 0, "")
-    west = TrainPosition("x", 1, 0, 0.0, 0, "")
-    assert layout.train_pixels(east)[0] == a
-    assert layout.train_pixels(west)[0] == b
+    assert layout.train_pixels(TrainPosition("x", 0, 1, 0.0, 0, ""))[0] == a
+    assert layout.train_pixels(TrainPosition("x", 1, 0, 0.0, 0, ""))[0] == b
     head, tail = layout.train_pixels(TrainPosition("x", 0, 1, 1.0, 0, ""))
     assert head == b and tail is not None
+
+
+@pytest.mark.parametrize("size", [(64, 32), (64, 64), (128, 64)])
+def test_two_tracks_never_touch(bakerloo, size):
+    layout = build_layout(bakerloo, *size, tracks=2)
+    fwd = {p for seg in layout.forward for p in seg}
+    bwd = {p for seg in layout.backward for p in seg}
+    assert not fwd & bwd
+    for x, y in fwd | bwd:
+        assert 0 <= x < size[0] and 0 <= y < size[1]
+
+
+def test_opposite_trains_use_different_tracks(bakerloo):
+    layout = build_layout(bakerloo, 128, 64)
+    going = layout.train_pixels(TrainPosition("a", 10, 11, 0.5, 30, ""))[0]
+    coming = layout.train_pixels(TrainPosition("b", 11, 10, 0.5, 30, ""))[0]
+    assert going in layout.forward[10] and coming in layout.backward[10]
+    assert going != coming
+
+
+def test_trains_keep_left(bakerloo):
+    # Harrow & Wealdstone is top-left, Elephant & Castle bottom-right, so a train
+    # heading for Elephant & Castle (south-east) keeps left = runs on the upper track.
+    layout = build_layout(bakerloo, 128, 64)
+    assert layout.describe_tracks(bakerloo) == {"upper": "Elephant & Castle", "lower": "Harrow & Wealdstone"}
+
+
+def test_waiting_train_sits_on_its_departure_track(bakerloo):
+    layout = build_layout(bakerloo, 128, 64)
+    head, _ = layout.train_pixels(TrainPosition("w", 0, 0, 1.0, 60, ""))
+    assert head == layout.forward[0][0]
+    last = len(bakerloo) - 1
+    head, _ = layout.train_pixels(TrainPosition("w", last, last, 1.0, 60, ""))
+    assert head == layout.backward[-1][-1]

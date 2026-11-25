@@ -43,7 +43,12 @@ def test_track_toggle_and_bounds(board):
     board.update("[]", now=0.0)
     with_track = board.lit_pixels(now=0.0, show_track=True)
     without = board.lit_pixels(now=0.0, show_track=False)
-    assert len(without) == 25 * 5  # only the 25 stations
+    station_pixels = {p for mark in board.layout.station_marks for p in mark}
+    assert len(without) == len(station_pixels) * 5  # only the station bars
     assert len(with_track) > len(without)
     x0, y0, x1, y1 = board.bounds()
     assert 0 <= x0 < x1 < 128 and 0 <= y0 < y1 < 64
+
+
+def test_track_legend(board):
+    assert json.loads(board.tracks()) == {"upper": "Elephant & Castle", "lower": "Harrow & Wealdstone"}

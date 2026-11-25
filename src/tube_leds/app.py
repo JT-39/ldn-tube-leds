@@ -41,11 +41,11 @@ def draw_frame(canvas, layout: Layout, positions: list[TrainPosition], colour, s
     """Paint one frame. ``canvas`` is anything with SetPixel(x, y, r, g, b)."""
     if show_track:
         track = dim(colour, 0.4)
-        for seg in layout.segments:
-            for x, y in seg:
-                canvas.SetPixel(x, y, *track)
-    for x, y in layout.station_px:
-        canvas.SetPixel(x, y, *STATION)
+        for x, y in layout.track_pixels():
+            canvas.SetPixel(x, y, *track)
+    for mark in layout.station_marks:
+        for x, y in mark:
+            canvas.SetPixel(x, y, *STATION)
     for pos in positions:
         (x, y), tail = layout.train_pixels(pos)
         if tail:
@@ -104,7 +104,7 @@ class LiveFeed:
 def cmd_run(args) -> None:
     route = get_route(args.line, refresh=not args.demo)
     width, height = parse_size(args.size)
-    layout = build_layout(route, width, height, args.layout)
+    layout = build_layout(route, width, height, args.layout, args.tracks)
     for a, b in layout.collisions(route):
         print(f"note: {a} and {b} share a pixel with this layout")
 
@@ -157,8 +157,10 @@ def cmd_peek(args) -> None:
 def cmd_route(args) -> None:
     route = get_route(args.line, refresh=not args.offline)
     width, height = parse_size(args.size)
-    layout = build_layout(route, width, height, args.layout)
+    layout = build_layout(route, width, height, args.layout, args.tracks)
     print(ascii_preview(layout, route))
+    if args.tracks == 2:
+        print("tracks: " + ", ".join(f"{side} → {dest}" for side, dest in layout.describe_tracks(route).items()))
     for a, b in layout.collisions(route):
         print(f"! {a} and {b} share a pixel")
 
@@ -193,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--demo", action="store_true", help="use simulated trains instead of live data")
     run.add_argument("--size", default="128x64", help="grid size WxH (default 128x64)")
     run.add_argument("--layout", choices=["schematic", "geo"], default="schematic")
+    run.add_argument("--tracks", type=int, choices=[1, 2], default=2, help="one track per direction (2) or shared (1)")
     run.add_argument("--poll", type=float, default=30, help="seconds between TfL requests")
     run.add_argument("--fps", type=float, default=20)
     run.add_argument("--speed", type=float, default=1, help="demo only: fast-forward factor")
@@ -206,6 +209,7 @@ def main(argv: list[str] | None = None) -> None:
     route = common(sub.add_parser("route", help="refresh the station list and preview the layout"))
     route.add_argument("--size", default="128x64")
     route.add_argument("--layout", choices=["schematic", "geo"], default="schematic")
+    route.add_argument("--tracks", type=int, choices=[1, 2], default=2)
     route.add_argument("--offline", action="store_true", help="don't contact TfL, use the cached file")
     route.set_defaults(func=cmd_route)
 

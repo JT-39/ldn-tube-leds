@@ -24,7 +24,7 @@ uv run tube-leds run --demo --speed 10   # simulated trains, 10x speed → opens
 uv run tube-leds route                   # fetch the real station list from TfL + ASCII preview
 uv run tube-leds peek                    # table of where every live train is right now
 uv run tube-leds run                     # the real thing
-uv run pytest                            # 20 tests
+uv run pytest                            # 27 tests
 ```
 
 Run commands from the project folder: data lives in `./data`.
@@ -45,7 +45,7 @@ TfL arrivals ──► positions.py ──► layout.py ──► app.py ──�
 |---|---|
 | `tfl.py` | Two kinds of data. The **route** (stations in order, with coordinates) is static, so it's fetched once and cached as JSON. **Arrivals** are live: one row per train *per upcoming station*, e.g. "train 236 reaches Paddington in 95 s". |
 | `positions.py` | Trains have no GPS, so position is **inferred**. Group rows by `vehicleId`, take the soonest station as "next stop", work out direction, then `progress = 1 − seconds_to_next / run_time`. Between polls, **dead reckoning** keeps trains moving smoothly. |
-| `layout.py` | Stations → pixels. A geographic layout fails in central London (Charing Cross and Embankment are ~170 m apart), so the default is a **schematic**: directions snapped to 45°, equal spacing, like Harry Beck's map. |
+| `layout.py` | Stations → pixels. A geographic layout fails in central London (Charing Cross and Embankment are ~170 m apart), so the default is a **schematic**: directions snapped to 45°, equal spacing, like Harry Beck's map. Each direction gets its own track, and trains keep left. |
 | `app.py` | Draws frames, runs the loop, CLI. `make_matrix()` tries the real `rgbmatrix` library first and falls back to the emulator. |
 | `demo.py` | A fake TfL feed with the same JSON shape, for offline work and tests. It's simulated, so don't analyse it. |
 
@@ -57,10 +57,11 @@ Two bits that are fun from a data science angle:
 ## Things to try
 
 1. **Sanity-check the model.** `uv run tube-leds peek` shows our estimate next to TfL's own `currentLocation` text ("Between Paddington and Edgware Road"). Where do they disagree, and why?
-2. **See why tube maps are schematic.** `uv run tube-leds route --layout geo --size 64x32` reports a collision. Then compare `uv run tube-leds run --layout geo`.
+2. **See why tube maps are schematic.** `uv run tube-leds route --layout geo --size 64x32 --tracks 1` reports a collision. Then compare `uv run tube-leds run --layout geo`.
 3. **Fit the run-time model.** Collect real data with `uv run tube-leds record --minutes 120`. Load `data/snapshots/*.jsonl` into polars or pandas and explode the `arrivals` lists. For each train, find when its "next stop" changes: that's a departure. Measure station-to-station times, regress them on distance, and plug the fitted overhead and speed into `default_run_time`.
 4. **Try another unbranched line.** `uv run tube-leds route --line victoria`, then `run --line victoria`. Jubilee and Waterloo & City work too. Branched lines (Northern, District…) need step 2.
 5. **Make it look like the real thing.** `run --no-track` lights only the trains, as on Fraser's map, where the printed map provides the lines.
+6. **One track or two.** By default each direction has its own track and trains keep left, so direction is obvious at a glance. `--tracks 1` puts both directions on one line. `layout.left_offsets` is the geometry: a bit of vector maths (normals and miters) worth reading.
 
 ## Website
 

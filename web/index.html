@@ -48,6 +48,9 @@
     padding: 3px 7px; border-radius: 5px; white-space: nowrap; display: none;
   }
 
+  .legend { margin: 10px 2px 0; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); }
+  .legend b { color: var(--text); font-weight: 600; }
+  .legend .arrow { color: var(--line); font-weight: 700; margin-right: 4px; }
   .controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 22px; flex-wrap: wrap; }
   .toggle { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .toggle input { accent-color: var(--line); width: 16px; height: 16px; }
@@ -86,6 +89,8 @@
     <div id="tip"></div>
   </div>
 
+  <p class="legend" id="legend"></p>
+
   <div class="controls">
     <label class="toggle"><input type="checkbox" id="track" checked> Show track</label>
     <div class="seg" role="group" aria-label="Data source">
@@ -100,8 +105,9 @@
   <footer>
     Powered by TfL Open Data. Trains don't report their position, so it's estimated from
     arrival predictions by the same Python code that drives the LED panel, running here in
-    your browser via Pyodide. White dot = train, orange = the way it's heading. Tap a dot to
-    see the station.<br>
+    your browser via Pyodide. Each direction has its own track and trains keep left, as on
+    real UK railways. White dot = train, orange tail = where it's just been. Tap a station
+    to see its name.<br>
     <a href="https://github.com/JT-39/ldn-tube-leds">Source on GitHub</a> · build __BUILD__
   </footer>
 </main>
@@ -146,6 +152,7 @@ async function boot() {
     board = web.Board(routeJson, 128, 64);
     bounds = board.bounds().toJs();
     stations = JSON.parse(board.stations());
+    renderLegend(JSON.parse(board.tracks()));
     $("loading").remove();
     resize();
     await tick();
@@ -235,6 +242,17 @@ function frame(t) {
     led(ctx, x - x0 + PAD, y - y0 + PAD);
   }
   ctx.shadowBlur = 0;
+}
+
+// ---------------------------------------------------------------- legend
+function renderLegend(tracks) {
+  const label = { upper: "Upper track", lower: "Lower track", left: "Left track", right: "Right track" };
+  $("legend").replaceChildren(...Object.entries(tracks).map(([side, dest]) => {
+    const span = document.createElement("span");
+    span.innerHTML = `<span class="arrow">→</span>${label[side]}: towards <b></b>`;
+    span.querySelector("b").textContent = dest;
+    return span;
+  }));
 }
 
 // ---------------------------------------------------------------- train list

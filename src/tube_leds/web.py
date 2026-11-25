@@ -16,8 +16,7 @@ from .app import LINE_COLOURS, draw_frame
 from .demo import DemoFeed
 from .layout import build_layout
 from .positions import estimate_positions, parse_predictions
-from .tfl import Route, Station
-from .validate import check_positions, summarise
+from .tfl import Route, Station, align_to_route
 
 
 class _RecordingCanvas:
@@ -39,6 +38,7 @@ class Board:
         self.layout = build_layout(self.route, width, height, style, tracks)
         self.colour = LINE_COLOURS.get(self.route.line_id, (255, 255, 255))
         self.predictions = []
+        self.board_rows: list[dict] = []  # every row with a station and a time, even without a train id
         self.fetched_at = 0.0
         self._demo: DemoFeed | None = None
 
@@ -46,7 +46,11 @@ class Board:
 
     def update(self, arrivals_json: str, now: float) -> int:
         """Load a fresh TfL response. Returns the number of trains seen."""
-        self.predictions = parse_predictions(json.loads(arrivals_json), self.route.line_id)
+        rows = align_to_route(json.loads(arrivals_json), self.route)
+        rows = [r for r in rows if not r.get("lineId") or r["lineId"] == self.route.line_id]
+        self.predictions = parse_predictions(rows, self.route.line_id)
+        # Station boards don't need to follow a train, so they keep rows that lack a vehicleId.
+        self.board_rows = [r for r in rows if r.get("naptanId") in self.route.index and "timeToStation" in r]
         self.fetched_at = now
         return len({p.vehicle_id for p in self.predictions})
 
@@ -82,10 +86,10 @@ class Board:
         return [v for (x, y), rgb in canvas.pixels.items() for v in (x, y, *rgb)]
 
     def stations(self) -> str:
-        """JSON list of {name, x, y, lines}, for labels and tooltips."""
+        """JSON list of {id, name, x, y, lines}, for labels, tooltips and push subscriptions."""
         return json.dumps(
             [
-                {"name": s.name, "x": x, "y": y, "lines": s.lines}
+                {"id": s.id, "name": s.name, "x": x, "y": y, "lines": s.lines}
                 for s, (x, y) in zip(self.route.stations, self.layout.station_px)
             ]
         )
@@ -94,7 +98,6 @@ class Board:
         """JSON list of trains (like `tube-leds peek`), for the table under the map."""
         names = [s.name for s in self.route.stations]
         positions = estimate_positions(self.predictions, self.route, elapsed_s=now - self.fetched_at)
-        verdicts = {c.vehicle_id: c.verdict for c in self._checks()}
         rows = [
             {
                 "id": p.vehicle_id,
@@ -103,24 +106,10 @@ class Board:
                 "towards": {1: names[-1], -1: names[0]}.get(p.direction, ""),
                 "progress": round(p.progress, 3),
                 "seconds": round(p.seconds_to_next),
-                "tfl": p.current_location,
-                "check": verdicts.get(p.vehicle_id, "unknown"),
             }
             for p in positions
         ]
-        return json.dumps(sorted(rows, key=lambda r: names.index(r["to"])))
-
-    # -- checking ---------------------------------------------------------------
-
-    def _checks(self):
-        # Compare at the moment the data was fetched: TfL's text describes the train *then*,
-        # and our dead-reckoned dots have moved on since.
-        positions = estimate_positions(self.predictions, self.route, elapsed_s=0.0)
-        return check_positions(positions, self.route)
-
-    def check_summary(self) -> str:
-        """JSON {agree, disagree, unknown, checked, rate}: our estimate vs TfL's own location text."""
-        return json.dumps(summarise(self._checks()))
+        return json.dumps(sorted(rows, key=lambda r: r["seconds"]))  # soonest arrival first
 
     def arrivals_at(self, index: int, now: float) -> str:
         """Next trains at one station, like a platform board (to compare with TfL Go, Apple Maps...)."""
@@ -129,19 +118,24 @@ class Board:
         elapsed = now - self.fetched_at
         heading = {p.vehicle_id: p.direction for p in estimate_positions(self.predictions, self.route, elapsed_s=elapsed)}
         rows = []
-        for p in self.predictions:
-            seconds = p.seconds - elapsed
-            if p.station_id != station.id or seconds < -20:  # skip trains that have already left
+        for r in self.board_rows:
+            seconds = float(r["timeToStation"]) - elapsed
+            if r["naptanId"] != station.id or seconds < -20:  # skip trains that have already left
                 continue
-            dest = self.route.index.get(p.destination_id)
-            direction = heading.get(p.vehicle_id) or (0 if dest is None else (dest > index) - (dest < index))
+            dest = self.route.index.get(r.get("destinationNaptanId"))
+            vehicle = (r.get("vehicleId") or "").strip()
+            direction = heading.get(vehicle) or (0 if dest is None else (dest > index) - (dest < index))
             rows.append(
                 {
-                    "id": p.vehicle_id,
+                    "id": vehicle,
                     "seconds": max(round(seconds), 0),
-                    "destination": names[dest] if dest is not None else "",
+                    "destination": names[dest] if dest is not None else clean_destination(r.get("destinationName")),
                     "towards": {1: names[-1], -1: names[0]}.get(direction, ""),
                 }
             )
         rows.sort(key=lambda r: r["seconds"])
         return json.dumps({"station": station.name, "arrivals": rows})
+
+
+def clean_destination(name: str | None) -> str:
+    return (name or "").removesuffix(" Underground Station").removesuffix(" Station")

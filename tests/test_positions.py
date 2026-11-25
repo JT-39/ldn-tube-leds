@@ -91,3 +91,17 @@ def test_parse_predictions_reads_tfl_shape():
     ]
     [p] = parse_predictions(raw, line_id="toy")
     assert p == Prediction("236", "S1", 95.0, "S3", "outbound", "Between Stop 0 and Stop 1")
+
+
+def test_align_to_route_matches_station_names():
+    from tube_leds.tfl import align_to_route, load_route, station_key
+
+    route = load_route("bakerloo")
+    assert station_key("Paddington (H&C Line) Underground Station") == "paddington"
+    assert station_key("Queen's Park Underground Station") == station_key("Queens Park") == "queens park"
+    [row] = align_to_route(
+        [{"naptanId": "940GZZLUPAC", "stationName": "Paddington (H&C Line) Underground Station",
+          "destinationName": "Harrow & Wealdstone Underground Station"}],
+        route,
+    )
+    assert row["naptanId"] == "940GZZLUPAH" and row["destinationNaptanId"] == "940GZZLUHAW"

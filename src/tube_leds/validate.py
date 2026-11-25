@@ -18,20 +18,11 @@ drawn a stop behind or ahead.
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass
 
 from .positions import TrainPosition
-from .tfl import Route
-
-
-def normalise(text: str) -> str:
-    """Lower-case, '&' -> 'and', drop brackets, apostrophes and punctuation."""
-    text = text.lower().replace("&", " and ").replace("'", "").replace("’", "")
-    text = re.sub(r"\(.*?\)", " ", text)
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return " ".join(text.split())
+from .tfl import Route, normalise
 
 
 def mentioned_stations(text: str, route: Route) -> list[int]:

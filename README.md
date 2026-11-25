@@ -25,7 +25,7 @@ uv run tube-leds route                   # fetch the real station list from TfL 
 uv run tube-leds peek                    # table of where every live train is right now
 uv run tube-leds check                   # how often we agree with TfL's own location text
 uv run tube-leds run                     # the real thing
-uv run pytest                            # 42 tests
+uv run pytest                            # 44 tests
 ```
 
 Run commands from the project folder: data lives in `./data`.
@@ -44,7 +44,7 @@ TfL arrivals ──► positions.py ──► layout.py ──► app.py ──�
 
 | Module | The idea |
 |---|---|
-| `tfl.py` | Two kinds of data. The **route** (stations in order, with coordinates) is static, so it's fetched once and cached as JSON. **Arrivals** are live: one row per train *per upcoming station*, e.g. "train 236 reaches Paddington in 95 s". |
+| `tfl.py` | Two kinds of data. The **route** (stations in order, with coordinates) is static, so it's fetched once and cached as JSON. **Arrivals** are live: one row per train *per upcoming station*, e.g. "train 236 reaches Paddington in 95 s". Rows are matched to stations by id, or by cleaned-up name when TfL's id differs (Paddington has two: `940GZZLUPAC` and `940GZZLUPAH`). |
 | `positions.py` | Trains have no GPS, so position is **inferred**. Group rows by `vehicleId`, take the soonest station as "next stop", work out direction, then `progress = 1 − seconds_to_next / run_time`. Between polls, **dead reckoning** keeps trains moving smoothly. |
 | `layout.py` | Stations → pixels. A geographic layout fails in central London (Charing Cross and Embankment are ~170 m apart), so the default is a **schematic**: directions snapped to 45°, equal spacing, like Harry Beck's map. Each direction gets its own track, and trains keep left. |
 | `app.py` | Draws frames, runs the loop, CLI. `make_matrix()` tries the real `rgbmatrix` library first and falls back to the emulator. |
@@ -81,9 +81,7 @@ uv run tube-leds record --minutes 120      # collect data...
 uv run tube-leds check --snapshots data/snapshots/*.jsonl   # ...then score it, and see where we go wrong
 ```
 
-The website shows the same thing: an agreement rate above the train list, and ✓/≠
-next to TfL's text for each train. On simulated data it's 100% by design, which only
-proves the plumbing works.
+On simulated data it's 100% by design, which only proves the plumbing works.
 
 **2. Do our times match other apps?**
 Tap a station on the website to see its next trains, grouped like a platform board.
@@ -112,6 +110,8 @@ data/routes/   ─┘                      └─ Pyodide runs tube_leds.web.Boa
 - `src/tube_leds/web.py` is the bridge: a `Board` the page feeds TfL JSON into and reads lit pixels out of. It reuses `positions`, `layout` and `draw_frame` unchanged. That's why `tfl.py` only imports `httpx` when it actually makes a request.
 - **Station labels** are placed by a small map-labelling optimiser in `web/index.html`. For each station it lists candidate spots (beside it, round the corner, at 45° like a dense tube map) and rejects any that touch the track or would sit closer to another station. Then it places labels greedily, ends and interchanges first (TfL's route data says how many lines stop at each station), with 40 seeded random restarts to keep the best layout. Unlabelled stations show their name when tapped.
 - TfL's API allows browser requests (CORS), so no server is needed. If TfL can't be reached, the page says so and shows simulated trains.
+- **Streaming.** TfL publishes its arrivals feed about every 30 s, so polling faster doesn't help. Instead the page also subscribes to TfL's push feed (an ASP.NET SignalR hub, the one TfL's own station pages use) and applies each prediction as it changes. Pushed and polled predictions meet in one store keyed by train and station, and the newer TfL timestamp wins. While streaming, the page still takes a full snapshot every 60 s. If the push feed can't connect, it quietly polls every 30 s instead. The status line says which: "streaming" or "updated hh:mm:ss".
+- **Key:** white = train, orange = station, brown = track. The train list is in order of arrival at each train's next stop.
 - Preview locally: `uv run python scripts/build_site.py && python -m http.server -d _site 8000`, then open <http://localhost:8000>.
 - Every push to `main` runs the tests, then builds and publishes the site (`.github/workflows/pages.yml`).
 

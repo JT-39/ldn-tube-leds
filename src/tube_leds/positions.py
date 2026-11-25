@@ -31,7 +31,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from .tfl import Route, Station
+from .tfl import Route, Station, align_to_route
 
 RunTime = Callable[[Station, Station], float]
 
@@ -67,7 +67,13 @@ class TrainPosition:
         return (self.to_idx > self.from_idx) - (self.to_idx < self.from_idx)
 
 
-def parse_predictions(raw: Iterable[dict], line_id: str | None = None) -> list[Prediction]:
+def parse_predictions(raw: Iterable[dict], line_id: str | None = None, route: Route | None = None) -> list[Prediction]:
+    """TfL rows -> Predictions. Rows without a train id are dropped (we can't follow them).
+
+    Pass ``route`` to first match stations by name where TfL's ids differ from ours.
+    """
+    if route is not None:
+        raw = align_to_route(list(raw), route)
     out = []
     for p in raw:
         vehicle = (p.get("vehicleId") or "").strip()

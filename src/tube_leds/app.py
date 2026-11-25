@@ -29,8 +29,9 @@ LINE_COLOURS = {
     "victoria": (0, 152, 212),
     "waterloo-city": (149, 205, 186),
 }
-TRAIN = (255, 255, 255)
-STATION = (70, 70, 70)
+TRAIN = (255, 255, 255)  # white: a train
+STATION = (255, 140, 0)  # bright orange: a station
+TRACK_BRIGHTNESS = 0.45  # the track is the line colour, dimmed, so stations and trains stand out
 
 
 def dim(colour: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
@@ -40,16 +41,14 @@ def dim(colour: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
 def draw_frame(canvas, layout: Layout, positions: list[TrainPosition], colour, show_track: bool = True) -> None:
     """Paint one frame. ``canvas`` is anything with SetPixel(x, y, r, g, b)."""
     if show_track:
-        track = dim(colour, 0.4)
+        track = dim(colour, TRACK_BRIGHTNESS)
         for x, y in layout.track_pixels():
             canvas.SetPixel(x, y, *track)
     for mark in layout.station_marks:
         for x, y in mark:
             canvas.SetPixel(x, y, *STATION)
     for pos in positions:
-        (x, y), tail = layout.train_pixels(pos)
-        if tail:
-            canvas.SetPixel(*tail, *colour)
+        (x, y), _ = layout.train_pixels(pos)
         canvas.SetPixel(x, y, *TRAIN)
 
 
@@ -124,7 +123,7 @@ def cmd_run(args) -> None:
             now = time.time()
             if now - fetched_at >= poll_s:
                 try:
-                    predictions = parse_predictions(feed.arrivals(), route.line_id)
+                    predictions = parse_predictions(feed.arrivals(), route.line_id, route)
                     fetched_at = now
                     print(f"{datetime.now():%H:%M:%S}  {len({p.vehicle_id for p in predictions})} trains")
                 except Exception as exc:
@@ -143,7 +142,7 @@ def cmd_run(args) -> None:
 def cmd_peek(args) -> None:
     route = get_route(args.line, refresh=False)
     feed = DemoFeed(route) if args.demo else LiveFeed(args.line)
-    positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id), route)
+    positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id, route), route)
     names = [s.name for s in route.stations]
     print(f"{'train':<6} {'from':<24} {'  to':<26} {'progress':>8} {'next in':>8}   TfL says")
     for p in sorted(positions, key=lambda p: (p.direction, p.to_idx)):
@@ -199,11 +198,11 @@ def cmd_check(args) -> None:
             with open(path) as f:
                 for line in f:
                     raw = json.loads(line)["arrivals"]
-                    checks += check_positions(estimate_positions(parse_predictions(raw, route.line_id), route), route)
+                    checks += check_positions(estimate_positions(parse_predictions(raw, route.line_id, route), route), route)
         source = f"{len(args.snapshots)} snapshot file(s)"
     else:
         feed = DemoFeed(route) if args.demo else LiveFeed(args.line)
-        positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id), route)
+        positions = estimate_positions(parse_predictions(feed.arrivals(), route.line_id, route), route)
         checks = check_positions(positions, route)
         source = "simulated feed" if args.demo else "live TfL data"
 

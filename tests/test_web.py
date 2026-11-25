@@ -19,7 +19,7 @@ def test_demo_round_trip(board):
     assert len(lit) % 5 == 0 and len(lit) > 0
     trains = json.loads(board.trains(now=1010.0))
     assert len(trains) == 10
-    assert {"from", "to", "progress", "seconds", "tfl"} <= trains[0].keys()
+    assert {"from", "to", "progress", "seconds", "towards"} <= trains[0].keys()
 
 
 def test_real_shaped_tfl_response(board):
@@ -72,11 +72,26 @@ def test_station_lines_default_to_one():
     assert Station("X", "Somewhere", 51.5, -0.1).lines == 1
 
 
-def test_check_summary_and_per_train_verdicts(board):
+def test_train_list_is_sorted_by_arrival(board):
     board.update_demo(now=2000.0)
-    summary = json.loads(board.check_summary())
-    assert summary["checked"] == 10 and summary["rate"] == 1.0  # the demo feed is self-consistent
-    assert {t["check"] for t in json.loads(board.trains(now=2000.0))} == {"agree"}
+    seconds = [t["seconds"] for t in json.loads(board.trains(now=2000.0))]
+    assert seconds == sorted(seconds) and len(seconds) == 10
+
+
+def test_paddington_found_by_name_and_rows_without_train_ids_still_count(board):
+    # TfL files Paddington under two ids; and some rows may lack a vehicleId.
+    arrivals = [
+        {"vehicleId": "", "lineId": "bakerloo", "naptanId": "940GZZLUPAC", "timeToStation": 90,
+         "stationName": "Paddington (H&C Line) Underground Station",
+         "destinationName": "Elephant & Castle Underground Station"},
+        {"vehicleId": "205", "lineId": "bakerloo", "naptanId": "940GZZLUPAC", "timeToStation": 200,
+         "stationName": "Paddington Underground Station", "destinationNaptanId": "940GZZLUQPS"},
+    ]
+    board.update(json.dumps(arrivals), now=0.0)
+    pad = [s["name"] for s in json.loads(board.stations())].index("Paddington")
+    rows = json.loads(board.arrivals_at(pad, now=0.0))["arrivals"]
+    assert [(r["destination"], r["seconds"]) for r in rows] == [("Elephant & Castle", 90), ("Queen's Park", 200)]
+    assert [t["to"] for t in json.loads(board.trains(now=0.0))] == ["Paddington"]  # the train with an id is drawn
 
 
 def test_arrivals_at_station_like_a_platform_board(board):

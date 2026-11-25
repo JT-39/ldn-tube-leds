@@ -72,12 +72,6 @@
   .bar { flex: none; width: 70px; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--line); }
   .empty { color: var(--muted); font-size: 14px; padding: 12px; background: var(--panel); }
-  .tfl { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
-  .tfl .mark { font-weight: 700; margin-right: 5px; }
-  .tfl .agree { color: #3ddc84; }
-  .tfl .disagree { color: #e8b339; }
-  .agree-line { margin: -2px 0 10px; font-size: 13px; color: var(--muted); }
-  .agree-line b { color: var(--text); }
 
   .station { background: var(--panel); border: 1px solid #26262c; border-radius: 10px; padding: 12px 14px; margin: 12px 0 0; }
   .station-head { display: flex; justify-content: space-between; align-items: center; }
@@ -130,14 +124,13 @@
   </div>
 
   <h2>Trains right now <span id="count"></span></h2>
-  <p class="agree-line" id="agree"></p>
   <ol id="trains"><li class="empty">Waiting for data…</li></ol>
 
   <footer>
     Powered by TfL Open Data. Trains don't report their position, so it's estimated from
     arrival predictions by the same Python code that drives the LED panel, running here in
     your browser via Pyodide. Tap a station to see its next trains. Each direction has its own track and trains keep left, as on
-    real UK railways. White dot = train, orange tail = where it's just been. Stations without
+    real UK railways. White dot = train, orange = station, brown = track. Stations without
     room for a label show their name when tapped.<br>
     <a href="https://github.com/JT-39/ldn-tube-leds">Source on GitHub</a> · build __BUILD__
   </footer>
@@ -148,7 +141,11 @@ const params = new URLSearchParams(location.search);
 const PYODIDE_URL = params.get("pyodide") ?? "https://cdn.jsdelivr.net/npm/pyodide@314.0.8/";
 const LINE = "bakerloo";
 const TFL_URL = `https://api.tfl.gov.uk/Line/${LINE}/Arrivals`;
-const POLL_MS = 30_000;
+const POLL_MS = 30_000;       // TfL publishes a fresh arrivals feed about every 30 s
+const RESYNC_MS = 60_000;     // while streaming, still take a full snapshot this often
+const PUSH_URL = "https://push-api.tfl.gov.uk/signalr/hubs/signalr";
+const JQUERY_URL = "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js";
+const SIGNALR_URL = "https://cdn.jsdelivr.net/npm/signalr@2.4.3/jquery.signalR.min.js";
 const FPS = 20;
 const PAD = 7; // empty LEDs around the line (room for labels)
 
@@ -194,7 +191,11 @@ async function boot() {
     await tick();
     setInterval(tick, POLL_MS);
     requestAnimationFrame(frame);
-    setInterval(() => { renderTrains(); renderStation(); }, 1000);
+    setInterval(() => {
+      if (dirty && mode === "live") showLive(syncBoard());
+      renderTrains();
+      renderStation();
+    }, 1000);
   } catch (err) {
     console.error(err);
     $("loading").textContent = "Couldn't start: " + err.message;
@@ -203,20 +204,71 @@ async function boot() {
 }
 
 // ---------------------------------------------------------------- data
+// Predictions arrive two ways and meet in one store, keyed by train + station:
+//  * full snapshots from the REST API (every 30 s; every 60 s once streaming), and
+//  * TfL's push feed (SignalR), which sends each prediction as soon as it changes.
+// Each entry keeps an absolute arrival time, so pushes and snapshots mix cleanly. When
+// both have the same prediction, the one with the newer TfL timestamp wins. Whenever the
+// store changes, the Python model gets a fresh view of it.
+const store = new Map();
+let streaming = false, pushStarted = false, lastPush = 0, lastRest = 0, dirty = false;
+
+const keyOf = (r) => (r.vehicleId ? `${r.vehicleId}|${r.naptanId}` : `id:${r.id}|${r.naptanId}`);
+
+function ingest(rows, at) {
+  const seen = new Set();
+  for (const r of rows) {
+    if ((r.lineId && r.lineId !== LINE) || !r.naptanId || r.timeToStation == null) continue;
+    const key = keyOf(r), prev = store.get(key);
+    seen.add(key);
+    if (prev && prev.row.timestamp && r.timestamp && r.timestamp < prev.row.timestamp) continue; // keep the newer one
+    store.set(key, { row: r, eta: at + Number(r.timeToStation), at });
+  }
+  return seen;
+}
+
+function syncBoard() {
+  const t = now();
+  for (const [k, v] of store) if (v.eta < t - 10) store.delete(k); // that train has been and gone
+  const rows = [...store.values()].map((v) => ({ ...v.row, timeToStation: Math.max(0, Math.round(v.eta - t)) }));
+  dirty = false;
+  return board.update(JSON.stringify(rows), t);
+}
+
+function showLive(n) {
+  const when = new Date().toLocaleTimeString("en-GB");
+  setStatus(streaming ? `Live · ${n} trains · streaming` : `Live · ${n} trains · updated ${when}`, "live");
+}
+
 async function tick() {
   if (mode === "demo") {
     board.update_demo(now());
     showingSimulated = true;
     setStatus("Simulated trains (not live data)", "sim");
+    renderTrains();
+    renderStation();
+    return;
+  }
+  if (streaming && Date.now() - lastPush > 90_000) streaming = false; // push has gone quiet: poll again
+  if (streaming && Date.now() - lastRest < RESYNC_MS) { // pushes are keeping us current
+    showingSimulated = false;
+    showLive(syncBoard());
+    renderTrains();
+    renderStation();
     return;
   }
   try {
     const res = await fetch(TFL_URL);
     if (!res.ok) throw new Error(`TfL returned ${res.status}`);
-    const n = board.update(await res.text(), now());
+    const rows = await res.json(), at = now();
+    const seen = ingest(rows, at);
+    // A full snapshot: forget anything it doesn't mention, unless a push refreshed it recently.
+    for (const [k, v] of store) if (!seen.has(k) && v.at < at - 30) store.delete(k);
+    lastRest = Date.now();
     lastLiveOk = new Date();
     showingSimulated = false;
-    setStatus(`Live · ${n} trains · updated ${lastLiveOk.toLocaleTimeString("en-GB")}`, "live");
+    showLive(syncBoard());
+    if (!pushStarted && !params.has("nopush")) startStreaming();
   } catch (err) {
     console.warn("live fetch failed:", err);
     if (lastLiveOk) {
@@ -229,6 +281,58 @@ async function tick() {
   }
   renderTrains();
   renderStation();
+}
+
+// ---------------------------------------------------------------- streaming (TfL push feed)
+// TfL's push service is an ASP.NET SignalR hub (the same one TfL's own station pages use).
+// We load its JavaScript client only when needed; if anything fails we simply keep polling.
+const lowerFirst = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k[0].toLowerCase() + k.slice(1), v]));
+
+function onPush(predictions) { // pushed fields are PascalCase ("TimeToStation"): convert to the REST names
+  if (mode !== "live" || !board) return;
+  ingest([].concat(predictions).map(lowerFirst), now());
+  lastPush = Date.now();
+  streaming = true;
+  dirty = true;
+}
+window.__tubePush = onPush; // lets tests simulate a push
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`couldn't load ${src}`));
+    document.head.append(el);
+  });
+}
+
+async function startStreaming() {
+  pushStarted = true;
+  try {
+    if (!window.jQuery) await loadScript(JQUERY_URL);
+    if (!window.jQuery.hubConnection) await loadScript(SIGNALR_URL);
+    const connection = window.jQuery.hubConnection(PUSH_URL, { useDefaultPath: false });
+    const hub = connection.createHubProxy("predictionsRoomHub");
+    hub.on("showPredictions", onPush);
+    const rooms = [{ LineId: LINE }, ...stations.map((s) => ({ LineId: LINE, NaptanId: s.id }))];
+    const connect = async () => {
+      try {
+        await connection.start();
+      } catch {
+        await connection.start({ jsonp: true }); // older fallback if the server refuses CORS
+      }
+      await hub.invoke("addLineRooms", rooms);
+    };
+    connection.disconnected(() => {
+      streaming = false;
+      setTimeout(() => connect().catch((err) => console.warn("push reconnect failed:", err)), 15_000);
+    });
+    await connect();
+  } catch (err) {
+    console.warn("streaming unavailable, polling instead:", err);
+    streaming = false;
+  }
 }
 
 // ---------------------------------------------------------------- drawing
@@ -416,6 +520,27 @@ function placeLabels() {
     if (result.score > best.score) best = result;
   }
 
+  // Leader lines: a short orange stroke from each station towards its label, so it's clear which is which.
+  c.strokeStyle = "rgb(255, 140, 0)";
+  c.lineWidth = Math.max(1.5 * dpr, cell * 0.22);
+  c.lineCap = "round";
+  for (const [i, spot] of best.chosen) {
+    const [sx, sy] = centres[i];
+    let px = sx, py = sy, gap = Infinity;
+    for (const b of spot.boxes) { // nearest point of the label to the station
+      const nx = Math.max(b.x, Math.min(sx, b.x + b.w)), ny = Math.max(b.y, Math.min(sy, b.y + b.h));
+      const d = Math.hypot(nx - sx, ny - sy);
+      if (d < gap) { gap = d; px = nx; py = ny; }
+    }
+    const start = cell * 1.5; // just outside the station's bar
+    if (gap <= start + dpr) continue;
+    const ux = (px - sx) / gap, uy = (py - sy) / gap;
+    c.beginPath();
+    c.moveTo(sx + ux * start, sy + uy * start);
+    c.lineTo(px - ux * dpr, py - uy * dpr);
+    c.stroke();
+  }
+
   c.lineWidth = fs * 0.3;
   c.strokeStyle = "#08080a";
   c.fillStyle = "#d6d3cd";
@@ -475,7 +600,6 @@ function renderTrains() {
   const list = $("trains");
   if (!trains.length) {
     list.innerHTML = `<li class="empty">No trains right now. The Bakerloo line doesn't run overnight.</li>`;
-    $("agree").textContent = "";
     return;
   }
   list.replaceChildren(...trains.map((t) => {
@@ -485,23 +609,10 @@ function renderTrains() {
     li.innerHTML = `
       <span class="hop">${hop}</span><span class="eta">${eta}</span>
       <span class="sub"><span class="bar"><i style="width:${Math.round(t.progress * 100)}%"></i></span>
-        ${t.towards ? "towards " + t.towards : ""}</span>
-      <span class="tfl"></span>`;
-    if (t.tfl) {
-      const mark = { agree: ["✓", "agree"], disagree: ["≠", "disagree"] }[t.check];
-      const tfl = li.querySelector(".tfl");
-      if (mark) tfl.innerHTML = `<span class="mark ${mark[1]}">${mark[0]}</span>`;
-      tfl.append("TfL: " + t.tfl); // TfL's text goes in as plain text, never HTML
-    }
+        ${t.towards ? "towards " + t.towards : ""}</span>`;
     li.title = `train ${t.id}`;
     return li;
   }));
-
-  const s = JSON.parse(board.check_summary());
-  $("agree").innerHTML = s.checked
-    ? `Our positions agree with TfL's own location text for <b>${s.agree} of ${s.checked}</b> trains (${Math.round(s.rate * 100)}%)` +
-      (showingSimulated ? " — simulated data, so this only tests the plumbing." : ".")
-    : "";
 }
 
 // ---------------------------------------------------------------- station board

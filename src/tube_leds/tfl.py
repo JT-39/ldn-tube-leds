@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import asdict, dataclass
 from functools import cached_property
 from pathlib import Path
@@ -67,6 +68,47 @@ class Route:
 
     def __len__(self) -> int:
         return len(self.stations)
+
+
+def normalise(text: str) -> str:
+    """Lower-case, '&' -> 'and', drop brackets, apostrophes and punctuation."""
+    text = text.lower().replace("&", " and ").replace("'", "").replace("’", "")
+    text = re.sub(r"\(.*?\)", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def station_key(name: str) -> str:
+    """A cleaned-up station name for joining on names.
+
+    "Paddington (H&C Line) Underground Station" -> "paddington"
+    "Edgware Road (Bakerloo)"                   -> "edgware road"
+    """
+    key = normalise(name)
+    for suffix in (" underground station", " rail station", " dlr station", " station"):
+        key = key.removesuffix(suffix)
+    return key
+
+
+def align_to_route(rows: list[dict], route: Route) -> list[dict]:
+    """Make TfL arrival rows use our route's station ids, matching on names if the ids differ.
+
+    TfL sometimes files a station under a different id from the one in its route
+    data (Paddington has two: 940GZZLUPAC and 940GZZLUPAH). Falling back to a
+    join on cleaned-up names is a classic data-cleaning move.
+    """
+    by_name = {station_key(s.name): s.id for s in route.stations}
+    aligned = []
+    for row in rows:
+        row = dict(row)
+        if row.get("naptanId") not in route.index:
+            row["naptanId"] = by_name.get(station_key(row.get("stationName") or ""), row.get("naptanId"))
+        if row.get("destinationNaptanId") not in route.index:
+            match = by_name.get(station_key(row.get("destinationName") or ""))
+            if match:
+                row["destinationNaptanId"] = match
+        aligned.append(row)
+    return aligned
 
 
 def clean_name(name: str) -> str:

@@ -19,6 +19,7 @@ from . import tfl
 from .demo import DemoFeed
 from .layout import Layout, ascii_preview, build_layout
 from .positions import TrainPosition, estimate_positions, parse_predictions
+from .service import DelayTracker, parse_status
 
 # TfL's official line colours. Brown is famously hard to show on RGB LEDs;
 # tweak it until it looks right on your panel.
@@ -31,6 +32,10 @@ LINE_COLOURS = {
 }
 TRAIN = (255, 255, 255)  # white: a train
 STATION = (255, 140, 0)  # bright orange: a station
+LATE = (230, 30, 30)  # red: a train running late, or a disrupted stretch of track
+DUE_HERE = (30, 80, 255)  # TfL blue, brightened (the official #0019A8 vanishes on a black board):
+#                           a train due at the station you picked, within 10 minutes
+NOT_IN_SERVICE = (110, 110, 110)  # grey: the line isn't running, so this train probably isn't either
 TRACK_BRIGHTNESS = 0.45  # the track is the line colour, dimmed, so stations and trains stand out
 
 
@@ -38,18 +43,53 @@ def dim(colour: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
     return tuple(int(c * factor) for c in colour)
 
 
-def draw_frame(canvas, layout: Layout, positions: list[TrainPosition], colour, show_track: bool = True) -> None:
-    """Paint one frame. ``canvas`` is anything with SetPixel(x, y, r, g, b)."""
+def draw_frame(
+    canvas,
+    layout: Layout,
+    positions: list[TrainPosition],
+    colour,
+    show_track: bool = True,
+    *,
+    train_colours: dict[str, tuple[int, int, int]] | None = None,
+    red_segments: set[tuple[int, int]] | None = None,
+) -> None:
+    """Paint one frame. ``canvas`` is anything with SetPixel(x, y, r, g, b).
+
+    ``train_colours`` overrides the colour of particular trains (by vehicle id);
+    ``red_segments`` is a set of (direction, segment index) to paint red, even
+    when the rest of the track is hidden.
+    """
     if show_track:
         track = dim(colour, TRACK_BRIGHTNESS)
         for x, y in layout.track_pixels():
             canvas.SetPixel(x, y, *track)
+    for direction, i in red_segments or ():
+        for x, y in layout.track(direction)[i]:
+            canvas.SetPixel(x, y, *dim(LATE, 0.6))
     for mark in layout.station_marks:
         for x, y in mark:
             canvas.SetPixel(x, y, *STATION)
     for pos in positions:
         (x, y), _ = layout.train_pixels(pos)
-        canvas.SetPixel(x, y, *TRAIN)
+        canvas.SetPixel(x, y, *(train_colours or {}).get(pos.vehicle_id, TRAIN))
+
+
+def service_styles(positions, status, late, n_segments) -> tuple[dict, set]:
+    """Colours for trains and track from the line status and late trains (shared by LED panel and web)."""
+    colours, red = {}, set()
+    if status is not None:
+        if status.whole_line:
+            red |= {(d, i) for d in (1, -1) for i in range(n_segments)}
+        for a, b in status.stretches:
+            red |= {(d, i) for d in (1, -1) for i in range(a, b)}
+    for p in positions:
+        if status is not None and status.no_service:
+            colours[p.vehicle_id] = NOT_IN_SERVICE
+        elif p.vehicle_id in late:
+            colours[p.vehicle_id] = LATE
+            if p.from_idx != p.to_idx:
+                red.add((p.direction, min(p.from_idx, p.to_idx)))
+    return colours, red
 
 
 def make_matrix(width: int, height: int):
@@ -99,6 +139,9 @@ class LiveFeed:
     def arrivals(self) -> list[dict]:
         return tfl.fetch_arrivals(self.client, self.line)
 
+    def status(self) -> list[dict]:
+        return tfl.fetch_status(self.client, self.line)
+
 
 def cmd_run(args) -> None:
     route = get_route(args.line, refresh=not args.demo)
@@ -118,21 +161,32 @@ def cmd_run(args) -> None:
         print("Emulator running: open http://localhost:8888 in your browser.")
 
     predictions, fetched_at = [], 0.0
+    delays, status, status_at = DelayTracker(), None, 0.0
     try:
         while True:
             now = time.time()
+            if not args.demo and now - status_at >= 120:  # TfL's line status, every 2 minutes
+                status_at = now
+                try:
+                    status = parse_status(feed.status(), route)
+                    print(f"{datetime.now():%H:%M:%S}  status: {status.summary}")
+                except Exception as exc:
+                    print(f"warning: status fetch failed ({exc})")
             if now - fetched_at >= poll_s:
                 try:
                     predictions = parse_predictions(feed.arrivals(), route.line_id, route)
                     fetched_at = now
-                    print(f"{datetime.now():%H:%M:%S}  {len({p.vehicle_id for p in predictions})} trains")
+                    if not args.demo:
+                        delays.update(predictions, now)
+                    print(f"{datetime.now():%H:%M:%S}  {len({p.vehicle_id for p in predictions})} trains, {len(delays.late)} late")
                 except Exception as exc:
                     print(f"warning: fetch failed ({exc}); retrying shortly")
                     fetched_at = now - poll_s + 5  # try again in 5 s, keep showing old data
             elapsed = (time.time() - fetched_at) * (args.speed if args.demo else 1)
             positions = estimate_positions(predictions, route, elapsed_s=elapsed)
+            colours, red = service_styles(positions, status, delays.late, len(layout.forward))
             canvas.Clear()
-            draw_frame(canvas, layout, positions, colour, show_track=not args.no_track)
+            draw_frame(canvas, layout, positions, colour, show_track=not args.no_track, train_colours=colours, red_segments=red)
             canvas = matrix.SwapOnVSync(canvas)
             time.sleep(1 / args.fps)
     except KeyboardInterrupt:

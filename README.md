@@ -25,7 +25,7 @@ uv run tube-leds route                   # fetch the real station list from TfL 
 uv run tube-leds peek                    # table of where every live train is right now
 uv run tube-leds check                   # how often we agree with TfL's own location text
 uv run tube-leds run                     # the real thing
-uv run pytest                            # 44 tests
+uv run pytest                            # 56 tests
 ```
 
 Run commands from the project folder: data lives in `./data`.
@@ -48,6 +48,7 @@ TfL arrivals ──► positions.py ──► layout.py ──► app.py ──�
 | `positions.py` | Trains have no GPS, so position is **inferred**. Group rows by `vehicleId`, take the soonest station as "next stop", work out direction, then `progress = 1 − seconds_to_next / run_time`. Between polls, **dead reckoning** keeps trains moving smoothly. |
 | `layout.py` | Stations → pixels. A geographic layout fails in central London (Charing Cross and Embankment are ~170 m apart), so the default is a **schematic**: directions snapped to 45°, equal spacing, like Harry Beck's map. Each direction gets its own track, and trains keep left. |
 | `app.py` | Draws frames, runs the loop, CLI. `make_matrix()` tries the real `rgbmatrix` library first and falls back to the emulator. |
+| `service.py` | Is the service normal? Parses TfL's **line status** ("Minor Delays between Queen's Park and Harrow…") into a stretch of track, using the station-name matcher from `validate.py`. A **delay tracker** flags trains whose predicted arrival at the same station keeps slipping (≥2 min). Both show red, on the LED panel and the website. |
 | `demo.py` | A fake TfL feed with the same JSON shape, for offline work and tests. It's simulated, so don't analyse it. |
 
 Two bits that are fun from a data science angle:
@@ -111,7 +112,9 @@ data/routes/   ─┘                      └─ Pyodide runs tube_leds.web.Boa
 - **Station labels** are placed by a small map-labelling optimiser in `web/index.html`. For each station it lists candidate spots (beside it, round the corner, at 45° like a dense tube map) and rejects any that touch the track or would sit closer to another station. Then it places labels greedily, ends and interchanges first (TfL's route data says how many lines stop at each station), with 40 seeded random restarts to keep the best layout. Unlabelled stations show their name when tapped.
 - TfL's API allows browser requests (CORS), so no server is needed. If TfL can't be reached, the page says so and shows simulated trains.
 - **Streaming.** TfL publishes its arrivals feed about every 30 s, so polling faster doesn't help. Instead the page also subscribes to TfL's push feed (an ASP.NET SignalR hub, the one TfL's own station pages use) and applies each prediction as it changes. Pushed and polled predictions meet in one store keyed by train and station, and the newer TfL timestamp wins. While streaming, the page still takes a full snapshot every 60 s. If the push feed can't connect, it quietly polls every 30 s instead. The status line says which: "streaming" or "updated hh:mm:ss".
-- **Key:** white = train, orange = station, brown = track. The train list is in order of arrival at each train's next stop.
+- **Key:** white = train, orange = station, brown = track, red = delays, grey = probably not in service, blue = due at the station you tapped within 10 minutes. The train list has a tab per direction, soonest arrival first.
+- **Trains that aren't in service.** The arrivals feed comes from the signalling system, so it can include trains being moved or stabled rather than carrying passengers (e.g. during a strike). A single prediction can't tell you which. When TfL's line status says the whole line isn't running, every train is drawn grey and listed as "may not be in service". A train that sits still also gets caught by the delay tracker and shows red.
+- **Smooth scrolling on phones.** Phones resize the page as the address bar slides in and out. The map only re-lays itself out when the *width* changes. The model runs 5 times a second, but the canvas only repaints when an LED actually changes.
 - Preview locally: `uv run python scripts/build_site.py && python -m http.server -d _site 8000`, then open <http://localhost:8000>.
 - Every push to `main` runs the tests, then builds and publishes the site (`.github/workflows/pages.yml`).
 

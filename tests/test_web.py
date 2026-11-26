@@ -111,3 +111,58 @@ def test_arrivals_at_station_like_a_platform_board(board):
         ("Queen's Park", 30, "Harrow & Wealdstone"),
         ("Elephant & Castle", 140, "Elephant & Castle"),
     ]
+
+
+def _colours(board, now, highlight=-1):
+    flat = board.lit_pixels(now, True, highlight)
+    return {(flat[i], flat[i + 1]): tuple(flat[i + 2:i + 5]) for i in range(0, len(flat), 5)}
+
+
+def _one_train(board, vehicle, station, seconds, now):
+    board.update(json.dumps([{"vehicleId": vehicle, "lineId": "bakerloo", "naptanId": station,
+                              "timeToStation": seconds, "destinationNaptanId": "940GZZLUEAC"}]), now=now)
+
+
+def test_trains_due_at_a_tapped_station_turn_tfl_blue(board):
+    from tube_leds.app import DUE_HERE
+
+    _one_train(board, "300", "940GZZLUOXC", 240, now=0.0)  # Oxford Circus in 4 minutes
+    oxc = [s["name"] for s in json.loads(board.stations())].index("Oxford Circus")
+    assert DUE_HERE in _colours(board, 0.0, highlight=oxc).values()
+    assert DUE_HERE not in _colours(board, 0.0).values()
+    [row] = json.loads(board.trains(0.0, oxc))
+    assert row["due_here"] is True
+
+
+def test_late_trains_are_red(board):
+    from tube_leds.app import LATE
+
+    _one_train(board, "301", "940GZZLUOXC", 60, now=0.0)
+    _one_train(board, "301", "940GZZLUOXC", 200, now=30.0)  # now due at t=230 instead of t=60
+    assert LATE in _colours(board, 30.0).values()
+    [row] = json.loads(board.trains(30.0))
+    assert row["late"] == 170
+
+
+def test_strike_greys_out_trains_and_simulated_mode_ignores_status(board):
+    from tube_leds.app import NOT_IN_SERVICE
+
+    summary = json.loads(board.set_status(json.dumps(
+        [{"lineStatuses": [{"statusSeverityDescription": "Suspended", "reason": "No service due to strike action."}]}])))
+    assert summary["no_service"] is True and summary["summary"] == "Suspended"
+    _one_train(board, "302", "940GZZLUOXC", 60, now=0.0)
+    assert NOT_IN_SERVICE in _colours(board, 0.0).values()
+    assert json.loads(board.trains(0.0))[0]["in_service"] is False
+    board.update_demo(now=0.0)
+    assert NOT_IN_SERVICE not in _colours(board, 0.0).values()
+
+
+def test_delayed_stretch_paints_track_red(board):
+    from tube_leds.app import LATE, dim
+
+    board.set_status(json.dumps([{"lineStatuses": [{
+        "statusSeverityDescription": "Minor Delays",
+        "reason": "Minor delays between Queen's Park and Harrow & Wealdstone."}]}]))
+    board.update("[]", now=0.0)
+    reds = [px for px, rgb in _colours(board, 0.0).items() if rgb == dim(LATE, 0.6)]
+    assert len(reds) > 20

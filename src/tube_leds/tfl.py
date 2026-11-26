@@ -217,3 +217,8 @@ def fetch_arrivals(client: httpx.Client, line_id: str) -> list[dict]:
     One train appears many times: once for every station it will reach soon.
     """
     return _get(client, f"/Line/{line_id}/Arrivals")
+
+
+def fetch_status(client: httpx.Client, line_id: str) -> list[dict]:
+    """TfL's current status for a line ("Good Service", "Minor Delays", ... plus a reason)."""
+    return _get(client, f"/Line/{line_id}/Status")

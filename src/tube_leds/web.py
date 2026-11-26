@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import json
 
-from .app import LINE_COLOURS, draw_frame
+from dataclasses import asdict
+
+from .app import DUE_HERE, LINE_COLOURS, NOT_IN_SERVICE, draw_frame, service_styles
 from .demo import DemoFeed
 from .layout import build_layout
 from .positions import estimate_positions, parse_predictions
+from .service import DelayTracker, LineStatus, parse_status
 from .tfl import Route, Station, align_to_route
+
+DUE_WINDOW_S = 600  # "due at this station" means within the next 10 minutes
 
 
 class _RecordingCanvas:
@@ -40,6 +45,9 @@ class Board:
         self.predictions = []
         self.board_rows: list[dict] = []  # every row with a station and a time, even without a train id
         self.fetched_at = 0.0
+        self.simulated = False
+        self.status = LineStatus()  # from TfL's /Line/{id}/Status (live only)
+        self.delays = DelayTracker()
         self._demo: DemoFeed | None = None
 
     # -- data in ------------------------------------------------------------
@@ -52,14 +60,48 @@ class Board:
         # Station boards don't need to follow a train, so they keep rows that lack a vehicleId.
         self.board_rows = [r for r in rows if r.get("naptanId") in self.route.index and "timeToStation" in r]
         self.fetched_at = now
+        self.simulated = False
+        self.delays.update(self.predictions, now)
         return len({p.vehicle_id for p in self.predictions})
 
     def update_demo(self, now: float) -> int:
-        """Same as update(), but from the simulated feed."""
+        """Same as update(), but from the simulated feed (no delays, no line status)."""
         if self._demo is None:
             self._demo = DemoFeed(self.route, clock=lambda: self._demo_now)
         self._demo_now = now
-        return self.update(json.dumps(self._demo.arrivals()), now)
+        n = self.update(json.dumps(self._demo.arrivals()), now)
+        self.simulated = True
+        self.delays.reset()
+        return n
+
+    def set_status(self, status_json: str) -> str:
+        """Load TfL's line status. Returns a summary for the page's banner."""
+        self.status = parse_status(json.loads(status_json), self.route)
+        return json.dumps(asdict(self.status))
+
+    # -- styling ------------------------------------------------------------
+
+    def _positions(self, now: float):
+        return estimate_positions(self.predictions, self.route, elapsed_s=now - self.fetched_at)
+
+    def _due_at(self, index: int, now: float) -> set[str]:
+        """Trains predicted to reach station ``index`` within the next 10 minutes."""
+        if not 0 <= index < len(self.route):
+            return set()
+        station_id, elapsed = self.route.stations[index].id, now - self.fetched_at
+        return {
+            p.vehicle_id for p in self.predictions
+            if p.station_id == station_id and -20 <= p.seconds - elapsed <= DUE_WINDOW_S
+        }
+
+    def _styles(self, positions, now: float, highlight: int):
+        status = None if self.simulated else self.status
+        late = {} if self.simulated else self.delays.late
+        colours, red = service_styles(positions, status, late, len(self.layout.forward))
+        for vehicle in self._due_at(highlight, now):
+            if colours.get(vehicle) != NOT_IN_SERVICE:
+                colours[vehicle] = DUE_HERE  # TfL blue for the station you picked
+        return colours, red
 
     # -- data out -----------------------------------------------------------
 
@@ -78,11 +120,16 @@ class Board:
         """JSON like {"upper": "Elephant & Castle", "lower": "Harrow & Wealdstone"}, for the legend."""
         return json.dumps(self.layout.describe_tracks(self.route))
 
-    def lit_pixels(self, now: float, show_track: bool = True) -> list[int]:
-        """Flat list [x, y, r, g, b, x, y, r, g, b, ...] of every lit LED right now."""
-        positions = estimate_positions(self.predictions, self.route, elapsed_s=now - self.fetched_at)
+    def lit_pixels(self, now: float, show_track: bool = True, highlight: int = -1) -> list[int]:
+        """Flat list [x, y, r, g, b, x, y, r, g, b, ...] of every lit LED right now.
+
+        ``highlight`` is a station index: trains due there within 10 minutes turn TfL blue.
+        """
+        positions = self._positions(now)
+        colours, red = self._styles(positions, now, highlight)
         canvas = _RecordingCanvas()
-        draw_frame(canvas, self.layout, positions, self.colour, show_track=show_track)
+        draw_frame(canvas, self.layout, positions, self.colour, show_track=show_track,
+                   train_colours=colours, red_segments=red)
         return [v for (x, y), rgb in canvas.pixels.items() for v in (x, y, *rgb)]
 
     def stations(self) -> str:
@@ -94,20 +141,31 @@ class Board:
             ]
         )
 
-    def trains(self, now: float) -> str:
-        """JSON list of trains (like `tube-leds peek`), for the table under the map."""
-        names = [s.name for s in self.route.stations]
-        positions = estimate_positions(self.predictions, self.route, elapsed_s=now - self.fetched_at)
+    def trains(self, now: float, highlight: int = -1) -> str:
+        """JSON list of trains (like `tube-leds peek`), for the lists under the map."""
+        names, last = [s.name for s in self.route.stations], len(self.route) - 1
+        due = self._due_at(highlight, now)
+        late = {} if self.simulated else self.delays.late
+        no_service = not self.simulated and self.status.no_service
+
+        def towards(p):
+            if p.direction == 0:  # waiting at a terminus: it'll head for the other end
+                return names[-1] if p.to_idx < last else names[0]
+            return names[-1] if p.direction > 0 else names[0]
+
         rows = [
             {
                 "id": p.vehicle_id,
                 "from": names[p.from_idx],
                 "to": names[p.to_idx],
-                "towards": {1: names[-1], -1: names[0]}.get(p.direction, ""),
+                "towards": towards(p),
                 "progress": round(p.progress, 3),
                 "seconds": round(p.seconds_to_next),
+                "late": round(late.get(p.vehicle_id, 0)),
+                "due_here": p.vehicle_id in due,
+                "in_service": not no_service,
             }
-            for p in positions
+            for p in self._positions(now)
         ]
         return json.dumps(sorted(rows, key=lambda r: r["seconds"]))  # soonest arrival first
 

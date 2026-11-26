@@ -65,6 +65,18 @@
   h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; }
   #trains { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; background: #1d1d22; border-radius: 8px; overflow: hidden; }
   #trains li { background: var(--panel); padding: 9px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+  #trains li.due-here { box-shadow: inset 4px 0 0 #1e50ff; background: #1e50ff1f; }
+  .late { color: #ff5a4f; font-weight: 600; }
+  .nis { color: var(--muted); font-style: italic; }
+  .tabs { display: flex; gap: 6px; margin: 0 0 8px; }
+  .tabs button { flex: 1; font: inherit; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid #26262c;
+                 border-radius: 8px; padding: 8px 10px; cursor: pointer; text-align: left; line-height: 1.3; }
+  .tabs button.on { color: var(--text); border-color: var(--line); }
+  .tabs button small { display: block; color: var(--muted); font-size: 12px; }
+  .line-status { margin: -4px 0 12px; font-size: 13px; color: var(--muted); }
+  .line-status b { font-weight: 650; margin-right: 6px; }
+  .line-status.good b { color: #3ddc84; }
+  .line-status.bad b { color: #ff5a4f; }
   .hop { font-size: 14px; }
   .hop b { font-weight: 600; }
   .eta { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; text-align: right; }
@@ -94,6 +106,7 @@
     <h1>Bakerloo line</h1>
     <p class="status"><span class="dot" id="dot"></span><span id="status">Starting…</span></p>
   </header>
+  <p class="line-status" id="line-status" hidden></p>
 
   <div class="board">
     <canvas id="board" width="10" height="10" aria-label="LED map of the Bakerloo line"></canvas>
@@ -109,7 +122,7 @@
       <button id="station-close" aria-label="Close">✕</button>
     </div>
     <div class="station-cols" id="station-arrivals"></div>
-    <p class="hint">Compare with the platform board, TfL Go or Apple Maps for this station: times should match to within about a minute.</p>
+    <p class="hint">Trains due here in the next 10 minutes are shown in <b style="color:#1e50ff">blue</b> on the map. Times should match the platform board, TfL Go or Apple Maps to within about a minute.</p>
   </section>
 
   <div class="controls">
@@ -123,15 +136,18 @@
     </div>
   </div>
 
-  <h2>Trains right now <span id="count"></span></h2>
+  <h2>Trains right now</h2>
+  <div class="tabs" role="tablist" id="tabs"></div>
   <ol id="trains"><li class="empty">Waiting for data…</li></ol>
 
   <footer>
     Powered by TfL Open Data. Trains don't report their position, so it's estimated from
     arrival predictions by the same Python code that drives the LED panel, running here in
     your browser via Pyodide. Tap a station to see its next trains. Each direction has its own track and trains keep left, as on
-    real UK railways. White dot = train, orange = station, brown = track. Stations without
-    room for a label show their name when tapped.<br>
+    real UK railways. White = train, orange = station, brown = track, red = delays (from TfL's
+    line status, or a train whose arrival keeps slipping), grey = the line isn't running so the
+    train probably isn't in service, blue = due at the station you tapped within 10 minutes.
+    Stations without room for a label show their name when tapped.<br>
     <a href="https://github.com/JT-39/ldn-tube-leds">Source on GitHub</a> · build __BUILD__
   </footer>
 </main>
@@ -146,7 +162,8 @@ const RESYNC_MS = 60_000;     // while streaming, still take a full snapshot thi
 const PUSH_URL = "https://push-api.tfl.gov.uk/signalr/hubs/signalr";
 const JQUERY_URL = "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js";
 const SIGNALR_URL = "https://cdn.jsdelivr.net/npm/signalr@2.4.3/jquery.signalR.min.js";
-const FPS = 20;
+const EVAL_MS = 200;   // run the model 5x a second; repaint only when an LED changes
+const STATUS_MS = 120_000;
 const PAD = 7; // empty LEDs around the line (room for labels)
 
 const $ = (id) => document.getElementById(id);
@@ -160,6 +177,8 @@ let lastLiveOk = null;
 let showTrack = true;
 let showLabels = true, labelLayer = null, staticPx = [];
 let selected = null; // index of the tapped station
+let tab = null;      // which direction's trains the list shows (a terminus name)
+let needsDraw = true;
 
 function setStatus(text, kind) {
   $("status").textContent = text;
@@ -188,8 +207,11 @@ async function boot() {
     renderLegend(JSON.parse(board.tracks()));
     $("loading").remove();
     resize();
+    tab = stations[stations.length - 1].name;
     await tick();
     setInterval(tick, POLL_MS);
+    pollStatus();
+    setInterval(pollStatus, STATUS_MS);
     requestAnimationFrame(frame);
     setInterval(() => {
       if (dirty && mode === "live") showLive(syncBoard());
@@ -336,12 +358,18 @@ async function startStreaming() {
 }
 
 // ---------------------------------------------------------------- drawing
+let lastWidth = 0;
 function resize() {
   if (!bounds) return;
   const [x0, y0, x1, y1] = bounds;
   const cols = x1 - x0 + 1 + 2 * PAD, rows = y1 - y0 + 1 + 2 * PAD;
   const dpr = window.devicePixelRatio || 1;
   const cssWidth = canvas.parentElement.clientWidth - 20;
+  // Phones fire "resize" as the address bar slides away while you scroll. Only the width
+  // matters here, so ignore height-only changes (they caused the glitchy redraws).
+  if (labelLayer && Math.abs(cssWidth - lastWidth) < 1) return;
+  lastWidth = cssWidth;
+  needsDraw = true;
   // Fractional LED size, so the canvas matches the screen's real pixels exactly (sharp text).
   cell = Math.max(3, (cssWidth * dpr) / cols);
   canvas.width = Math.round(cols * cell);
@@ -526,18 +554,24 @@ function placeLabels() {
   for (const spot of best.chosen.values()) spot.draw((t, x, y) => c.strokeText(t, x, y)); // dark halo first
   for (const spot of best.chosen.values()) spot.draw((t, x, y) => c.fillText(t, x, y));
   window.__labels = { placed: best.chosen.size, total: stations.length };
+  window.__layouts = (window.__layouts || 0) + 1; // for tests: how often labels are re-laid out
   window.__placedNames = [...best.chosen.keys()].map((i) => stations[i].name);
   return layer;
 }
 
-let lastFrame = 0;
+let lastEval = 0, lastLit = "";
 function frame(t) {
   requestAnimationFrame(frame);
-  if (t - lastFrame < 1000 / FPS) return;
-  lastFrame = t;
-  const proxy = board.lit_pixels(now(), showTrack);
+  if (!needsDraw && t - lastEval < EVAL_MS) return;
+  lastEval = t;
+  const proxy = board.lit_pixels(now(), showTrack, selected ?? -1);
   const lit = proxy.toJs();
   proxy.destroy();
+  const key = lit.join(",");
+  if (!needsDraw && key === lastLit) return; // nothing moved: leave the canvas alone
+  lastLit = key;
+  needsDraw = false;
+  window.__draws = (window.__draws || 0) + 1; // for tests: how often we actually repaint
   const [x0, y0] = bounds;
   ctx.drawImage(background, 0, 0);
   for (let i = 0; i < lit.length; i += 5) {
@@ -574,24 +608,63 @@ function renderLegend(tracks) {
 
 // ---------------------------------------------------------------- train list
 function renderTrains() {
-  const trains = JSON.parse(board.trains(now()));
-  $("count").textContent = trains.length ? `· ${trains.length}` : "";
+  const all = JSON.parse(board.trains(now(), selected ?? -1));
+  const ends = [stations[stations.length - 1].name, stations[0].name];
+  $("tabs").replaceChildren(...ends.map((end) => {
+    const btn = document.createElement("button");
+    btn.setAttribute("role", "tab");
+    btn.className = end === tab ? "on" : "";
+    const n = all.filter((t) => t.towards === end).length;
+    btn.innerHTML = `Towards <b></b><small>${n} train${n === 1 ? "" : "s"}</small>`;
+    btn.querySelector("b").textContent = end;
+    btn.addEventListener("click", () => { tab = end; renderTrains(); });
+    return btn;
+  }));
+
+  const trains = all.filter((t) => t.towards === tab);
   const list = $("trains");
   if (!trains.length) {
-    list.innerHTML = `<li class="empty">No trains right now. The Bakerloo line doesn't run overnight.</li>`;
+    list.innerHTML = all.length
+      ? `<li class="empty">No trains heading this way right now.</li>`
+      : `<li class="empty">No trains right now. The Bakerloo line doesn't run overnight.</li>`;
     return;
   }
   list.replaceChildren(...trains.map((t) => {
     const li = document.createElement("li");
+    if (t.due_here) li.className = "due-here";
     const hop = t.from === t.to ? `At <b>${t.to}</b>` : `${t.from} → <b>${t.to}</b>`;
     const eta = t.seconds < 30 ? "due" : t.seconds < 90 ? `${t.seconds}s` : `${Math.round(t.seconds / 60)} min`;
+    const note = !t.in_service ? `<span class="nis">may not be in service</span>`
+      : t.late ? `<span class="late">+${Math.max(1, Math.round(t.late / 60))} min late</span>` : "";
     li.innerHTML = `
       <span class="hop">${hop}</span><span class="eta">${eta}</span>
-      <span class="sub"><span class="bar"><i style="width:${Math.round(t.progress * 100)}%"></i></span>
-        ${t.towards ? "towards " + t.towards : ""}</span>`;
+      <span class="sub"><span class="bar"><i style="width:${Math.round(t.progress * 100)}%"></i></span>${note}</span>`;
     li.title = `train ${t.id}`;
     return li;
   }));
+}
+
+// ---------------------------------------------------------------- line status
+async function pollStatus() {
+  if (!board || mode !== "live") { $("line-status").hidden = true; return; }
+  try {
+    const res = await fetch(`https://api.tfl.gov.uk/Line/${LINE}/Status`);
+    if (!res.ok) throw new Error(`TfL returned ${res.status}`);
+    renderStatus(JSON.parse(board.set_status(await res.text())));
+    needsDraw = true;
+  } catch (err) {
+    console.warn("status fetch failed:", err);
+  }
+}
+
+function renderStatus(s) {
+  const el = $("line-status");
+  el.className = "line-status " + (s.good ? "good" : "bad");
+  el.innerHTML = "<b></b><span></span>";
+  el.querySelector("b").textContent = s.good ? "Good service" : s.summary;
+  const extra = s.no_service ? " Trains shown may not be in service." : "";
+  el.querySelector("span").textContent = s.good ? "" : (s.reason || "") + extra; // TfL's text: plain text only
+  el.hidden = false;
 }
 
 // ---------------------------------------------------------------- station board
@@ -649,24 +722,33 @@ function showTip(evt) {
   tip.style.top = `${10 + (best.y - bounds[1] + PAD) * px}px`;
   tip.style.display = "block";
 }
-canvas.addEventListener("pointermove", showTip);
-canvas.addEventListener("pointerdown", showTip);
+// Hover tips only for a mouse: on a phone, touching the map to scroll shouldn't pop them up.
+canvas.addEventListener("pointermove", (evt) => { if (evt.pointerType === "mouse") showTip(evt); });
 canvas.addEventListener("pointerleave", () => ($("tip").style.display = "none"));
 canvas.addEventListener("click", (evt) => {
   const { best } = stationAt(evt);
   if (!best) return;
   selected = stations.indexOf(best);
+  $("tip").style.display = "none"; // the station panel shows the name, so no pop-up over the labels
+  needsDraw = true;
   renderStation();
+  renderTrains();
 });
-$("station-close").addEventListener("click", () => { selected = null; renderStation(); });
+$("station-close").addEventListener("click", () => {
+  selected = null;
+  needsDraw = true;
+  $("tip").style.display = "none";
+  renderStation();
+  renderTrains();
+});
 
 $("track").addEventListener("change", (e) => (showTrack = e.target.checked));
-$("labels").addEventListener("change", (e) => (showLabels = e.target.checked));
+$("labels").addEventListener("change", (e) => { showLabels = e.target.checked; needsDraw = true; });
 document.querySelectorAll(".seg button").forEach((btn) =>
   btn.addEventListener("click", () => {
     mode = btn.dataset.mode;
     document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b === btn));
-    if (board) tick();
+    if (board) { tick(); pollStatus(); }
   })
 );
 window.addEventListener("resize", resize);
